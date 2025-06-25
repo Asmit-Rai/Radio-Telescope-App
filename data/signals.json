@@ -1,0 +1,50 @@
+[
+    {
+      "id": 1,
+      "name": "Saved Signal 1",
+      "date": "26-05-25",
+      "time": "05:21:30pm",
+      "type": "Unknown",
+      "frequencyRange": "30Hz"
+    },
+    {
+      "id": 2,
+      "name": "Saved Signal 2",
+      "date": "26-05-25",
+      "time": "05:21:30pm",
+      "type": "Unknown",
+      "frequencyRange": "30Hz"
+    },
+    {
+      "id": 3,
+      "name": "Saved Signal 3",
+      "date": "26-05-25",
+      "time": "05:21:30pm",
+      "type": "Unknown",
+      "frequencyRange": "30Hz"
+    },
+    {
+      "id": 4,
+      "name": "Saved Signal 4",
+      "date": "26-05-25",
+      "time": "05:21:30pm",
+      "type": "Unknown",
+      "frequencyRange": "30Hz"
+    },
+    {
+      "id": 5,
+      "name": "Saved Signal 5",
+      "date": "26-05-25",
+      "time": "05:21:30pm",
+      "type": "Unknown",
+      "frequencyRange": "30Hz"
+    },
+    {
+      "id": 6,
+      "name": "Saved Signal 6",
+      "date": "26-05-25",
+      "time": "05:21:30pm",
+      "type": "Unknown",
+      "frequencyRange": "30Hz"
+    }
+  ]

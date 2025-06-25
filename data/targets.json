@@ -1,0 +1,269 @@
+[
+   
+    {
+      "id": 5,
+      "name": "Sagittarius A*",
+      "type": "Black Hole (Galactic Center)",
+      "frequency": "2500 – 3000+ MHz",
+      "ra": "17:45:40",
+      "dec": "-29°00′",
+      "info": "Weak narrowband bump near HI line; requires integration and filtering to visualize. Faint but trackable with narrowband focus.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 6,
+      "name": "Taurus A (Crab Nebula)",
+      "type": "Pulsar / SNR",
+      "frequency": "1000 – 5000 MHz",
+      "ra": "5:34:31",
+      "dec": "22°01′",
+      "info": "Distinct tall peak in spectrum analyzer; strong and steady across sessions. Used for calibration and pulse structure modeling.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 7,
+      "name": "Cygnus A",
+      "type": "Radio Galaxy",
+      "frequency": "1000 – 5000 MHz",
+      "ra": "19:59:28",
+      "dec": "40°44′",
+      "info": "Broad, bright emission line; easy to spot as a 'hill' in the FFT. One of the strongest known radio sources.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 8,
+      "name": "Cassiopeia A",
+      "type": "Supernova Remnant",
+      "frequency": "1000 – 3000+ MHz",
+      "ra": "23:23:24",
+      "dec": "58°48′",
+      "info": "Narrowband spectral spike; consistent signal, acts as calibrator. Classic target; bright and stable.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 9,
+      "name": "3C 273",
+      "type": "Quasar",
+      "frequency": "1000 – 5000+ MHz",
+      "ra": "12:29:06",
+      "dec": "-05°48′",
+      "info": "Very clean, narrow peaks; ideal for checking system gain and resolution. Brightest known quasar; used as a beacon or calibrator.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 11,
+      "name": "PSR B0329+54 Pulsar",
+      "type": "Pulsar",
+      "frequency": "400 – 1400 MHz",
+      "ra": "3:32:59",
+      "dec": "54°34′",
+      "info": "Rapid, consistent pulses; high SNR; visible as periodic bands. Bright enough to be a realistic amateur pulsar target.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 12,
+      "name": "Vela Pulsar",
+      "type": "Pulsar",
+      "frequency": "100 – 2000 MHz",
+      "ra": "8:35:20",
+      "dec": "-45°10′",
+      "info": "Tight, frequent pulses; fast flickers in waterfall; subtle but detectable. High signal-to-noise ratio, great for pulse demo.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 13,
+      "name": "PSR J0437–4715 Pulsar",
+      "type": "Pulsar",
+      "frequency": "400 – 2000 MHz",
+      "ra": "4:37:15",
+      "dec": "-47°15′",
+      "info": "Bright, thin spectral lines at precise frequencies (1612/1665/1720 MHz). Millisecond pulsar; one of the brightest in its class.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+  
+    {
+      "id": 15,
+      "name": "B2 0902+34",
+      "type": "High-z Galaxy",
+      "frequency": "300 – 1400 MHz",
+      "ra": "9:05:30",
+      "dec": "34°07′",
+      "info": "Slanted, striped pattern in waterfall; in audio, static hiss with image-sweep chirps. Redshifted hydrogen; historic science target.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+
+    {
+      "id": 22,
+      "name": "W3(OH)",
+      "type": "Star-forming Region (Maser)",
+      "frequency": "1665 – 1667 MHz",
+      "ra": "2:27:04",
+      "dec": "61°52′",
+      "info": "Flat, strong continuum; no distinct features; ideal steady calibration source. Narrowband spikes; used for velocity studies.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 23,
+      "name": "3C 147",
+      "type": "Radio Galaxy",
+      "frequency": "~1000 – 4000 MHz",
+      "ra": "5:42:36",
+      "dec": "49°51′07″",
+      "info": "Sharp maser lines; piercing tones useful for cloud rotation and star formation studies. Strong, steady continuum source.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 24,
+      "name": "W49A",
+      "type": "Star-forming Region (Maser)",
+      "frequency": "1612 – 1720 MHz",
+      "ra": "19:10:13",
+      "dec": "09°06′",
+      "info": "Periodic, ticking pulses; signature of rotating neutron stars. Distinct maser lines; good for rotation studies.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 25,
+      "name": "PSR B1919+21 Pulsar",
+      "type": "Pulsar",
+      "frequency": "400 – 1400 MHz",
+      "ra": "19:21:44",
+      "dec": "21°53′",
+      "info": "Broad diffuse emission; fuzzy shell-like structures in spectral maps. Discrete periodic pulses; original pulsar detected.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 26,
+      "name": "SNR IC 443",
+      "type": "Supernova Remnant",
+      "frequency": "1000 – 3000 MHz",
+      "ra": "6:17:00",
+      "dec": "22°21′",
+      "info": "Low-frequency lobes; extended halo appearance in sky maps; smooth, hissy signal. Diffuse emission with strong shell-like structures.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 27,
+      "name": "W44",
+      "type": "Supernova Remnant",
+      "frequency": "1000 – 3000 MHz",
+      "ra": "18:56:00",
+      "dec": "01°21′",
+      "info": "Bright quasar with jet features; variable broadband bursts with structure. Strong low-frequency radio lobes.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 28,
+      "name": "PKS 0637-752 Quasar",
+      "type": "Quasar",
+      "frequency": "~1000 – 3000+ MHz",
+      "ra": "6:35:47",
+      "dec": "-75°16′17″",
+      "info": "Extended lobes and bright noisy core; complex visual structure with broadband hiss. Bright quasar with jet features.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 29,
+      "name": "Centaurus A",
+      "type": "Radio Galaxy",
+      "frequency": "~1000 – 4000+ MHz",
+      "ra": "13:25:28",
+      "dec": "-43°01′09″",
+      "info": "Variable intensity; bursts that sound like rapid popping or static firecrackers. Extended lobes and bright core, visually noisy.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 30,
+      "name": "GRS 1915+105 Microquasar (Black Hole)",
+      "type": "Microquasar (Black Hole)",
+      "frequency": "~1400 – 2000+ MHz",
+      "ra": "19:15:12",
+      "dec": "10°56′44″",
+      "info": "Bright narrow line emissions; clean tones useful for molecular spectroscopy. Variable; used in studying relativistic jets.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 31,
+      "name": "Orion KL",
+      "type": "Star-forming Region",
+      "frequency": "~1400 – 1800 MHz",
+      "ra": "5:35:15",
+      "dec": "-05°22′30″",
+      "info": "Fast, regular pulses; very strong, ideal for amateur setups and education. Bright line emissions, used in molecular studies.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 32,
+      "name": "PSR B0950+08 Pulsar",
+      "type": "Pulsar",
+      "frequency": "100 – 1500 MHz",
+      "ra": "9:53:09",
+      "dec": "07°55′",
+      "info": "Bright core with diffuse lobes; central peak in signal with extended flanks. Bright pulses visible even in small setups.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 33,
+      "name": "Fornax A (NGC 1316)",
+      "type": "Radio Galaxy",
+      "frequency": "1400 – 3000 MHz",
+      "ra": "3:22:42",
+      "dec": "-37°12′30″",
+      "info": "Variable AGN; flickering or dancing peak in the signal spectrum over time. Bright central core with diffuse lobes.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 34,
+      "name": "PKS 2155-304 BL Lac Object",
+      "type": "BL Lac Object",
+      "frequency": "~1500 – 3000+ MHz",
+      "ra": "21:58:52",
+      "dec": "-30°13′32″",
+      "info": "Extremely stable, flat signal; calibration-grade, like a pure hum. Bright, variable AGN, good for flux monitoring.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 35,
+      "name": "PKS 1934-638 Radio Galaxy (Calibrator)",
+      "type": "Radio Galaxy",
+      "frequency": "1000 – 3000+ MHz",
+      "ra": "19:39:25",
+      "dec": "-63°42′45″",
+      "info": "Diffuse, large-scale emission; faint, fog-like signal with irregular edges. Extremely stable, ideal calibration source.",
+      "azimuth": 110,
+      "altitude": 45
+    },
+    {
+      "id": 36,
+      "name": "Vela SNR",
+      "type": "Supernova Remnant",
+      "frequency": "100 – 3000 MHz",
+      "ra": "8:35:20",
+      "dec": "-45°10′",
+      "info": "Diffuse large-scale emission, low frequency. Diffuse, large-scale emission; faint, fog-like signal with irregular edges.",
+      "azimuth": 110,
+      "altitude": 45
+    }
+]
