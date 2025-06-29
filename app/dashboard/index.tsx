@@ -150,7 +150,7 @@ export default function Dashboard() {
             onPress={() => router.push("/menu/learning-center" as any)}
           />
           <CardTile
-            title="Help"
+            title="About Us"
             icon={helpIcon}
             color="#fdf2a9"
             onPress={() => router.push("/menu/about-us" as any)}

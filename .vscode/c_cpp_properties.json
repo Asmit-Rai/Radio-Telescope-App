@@ -1,0 +1,20 @@
+{
+  "configurations": [
+    {
+      "name": "android-ndk",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "C:/Users/Android/Sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/include",
+        "C:/Users/Android/Sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/windows-x86_64/sysroot/usr/include/aarch64-linux-android"
+      ],
+      "compilerPath": "C:/Users/Android/Sdk/ndk/27.1.12297006/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe",
+      "cStandard": "c11",
+      "cppStandard": "c++17",
+      "intelliSenseMode": "clang-x64",
+      "compilerArgs": [
+        "-std=c++11"
+      ]
+    }    
+  ],
+  "version": 4
+}

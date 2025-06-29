@@ -22,11 +22,8 @@ import { router } from "expo-router";
 import { useBLE } from "context/BLEContext";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import {
-  UsbSerialManager,
-  Parity,
-} from "react-native-usb-serialport-for-android";
 import { debounce } from "lodash";
+import RTLSDRComponent from "components/RTLSDRComponent";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 
@@ -54,6 +51,11 @@ interface SavedSignal {
   audioBase64?: string;
 }
 
+interface CursorPosition {
+  x: number;
+  y: number;
+}
+
 const FreeUseMode: React.FC = () => {
   const { connectedDevice, writeData, checkConnection, getRSSI } = useBLE();
   const [status, setStatus] = useState<string>("Disconnected");
@@ -67,9 +69,7 @@ const FreeUseMode: React.FC = () => {
   const [frequency, setFrequency] = useState<number>(MIN_FREQUENCY);
   const [deviceName, setDeviceName] = useState<string>("");
   const [waveformData, setWaveformData] = useState<number[]>(new Array(100).fill(0));
-  const [isSdrConnected, setIsSdrConnected] = useState<boolean>(false);
-  const [sdrDeviceId, setSdrDeviceId] = useState<number | null>(null);
-  const [cursorPosition, setCursorPosition] = useState({
+  const [cursorPosition, setCursorPosition] = useState<CursorPosition>({
     x: SCREEN_WIDTH / 2,
     y: 75,
   });
@@ -85,12 +85,8 @@ const FreeUseMode: React.FC = () => {
   const recordedAudioRef = useRef<string | null>(null);
   const waveformScrollRef = useRef<number>(0);
   const longPressIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const usbSerialportRef = useRef<any>(null);
-  const dataIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const sdrSubscriptionRef = useRef<(() => void) | null>(null);
   const isMountedRef = useRef<boolean>(true);
 
-  // Debounced sendAngles with increased delay to align with command queue
   const debouncedSendAngles = useCallback(
     debounce(async (alt: number, az: number) => {
       if (!isMountedRef.current) return;
@@ -106,9 +102,7 @@ const FreeUseMode: React.FC = () => {
 
       try {
         const success = await writeData(constrainedAltitude, constrainedAzimuth);
-        if (!success) {
-          throw new Error("Write failed");
-        }
+        if (!success) throw new Error("Write failed");
         if (isMountedRef.current) {
           setAltitude(constrainedAltitude);
           setAzimuth(constrainedAzimuth);
@@ -116,17 +110,13 @@ const FreeUseMode: React.FC = () => {
         }
       } catch (error) {
         console.error("BLE Write Error:", error);
-        const errorMessage = error instanceof Error ? error.message : "Unknown error";
-        Alert.alert("Error", `Failed to send angles: ${errorMessage}`);
-        if (isMountedRef.current) {
-          setIsConnected(false);
-        }
+        Alert.alert("Error", `Failed to send angles: ${(error as Error).message || "Unknown error"}`);
+        if (isMountedRef.current) setIsConnected(false);
       }
-    }, 1000), // Increased to 1000ms to avoid queue overload
+    }, 1000),
     [connectedDevice, writeData, checkConnection]
   );
 
-  // Long-press handling
   const startLongPress = useCallback((adjustFn: (delta: number) => void, delta: number) => {
     adjustFn(delta);
     longPressIntervalRef.current = setInterval(() => adjustFn(delta), 150);
@@ -139,7 +129,6 @@ const FreeUseMode: React.FC = () => {
     }
   }, []);
 
-  // Connection and signal strength monitoring
   useEffect(() => {
     let interval: NodeJS.Timeout;
 
@@ -190,7 +179,6 @@ const FreeUseMode: React.FC = () => {
     };
   }, [connectedDevice, checkConnection, getRSSI]);
 
-  // Battery monitoring (mocked)
   useEffect(() => {
     const interval = setInterval(() => {
       if (isMountedRef.current) {
@@ -206,12 +194,11 @@ const FreeUseMode: React.FC = () => {
     };
   }, [connectedDevice]);
 
-  // Touch scroll pan responder for frequency control
   const frequencyPanResponder = PanResponder.create({
     onMoveShouldSetPanResponder: () => true,
     onPanResponderGrant: () => {},
     onPanResponderMove: (evt, gestureState) => {
-      const sensitivity = 0.004;
+      const sensitivity = 0.1;
       const deltaFreq = -gestureState.dx * sensitivity;
       adjustFrequency(deltaFreq);
       waveformScrollRef.current += gestureState.dx;
@@ -221,7 +208,6 @@ const FreeUseMode: React.FC = () => {
     },
   });
 
-  // Cursor pan responder for waveform navigation
   const cursorPanResponder = PanResponder.create({
     onMoveShouldSetPanResponder: () => true,
     onPanResponderGrant: () => {},
@@ -234,108 +220,6 @@ const FreeUseMode: React.FC = () => {
     onPanResponderRelease: () => {},
   });
 
-  // Initialize SDR connection
-  const initializeSDR = useCallback(async () => {
-    try {
-      const devices = await UsbSerialManager.list();
-      if (!devices || devices.length === 0) {
-        setIsSdrConnected(false);
-        console.log("No USB devices found");
-        return;
-      }
-
-      const device = devices.find((d) => d.deviceId === 2004) || devices[0];
-      await UsbSerialManager.tryRequestPermission(device.deviceId);
-      const usbSerialport = await UsbSerialManager.open(device.deviceId, {
-        baudRate: 115200,
-        parity: Parity.None,
-        dataBits: 8,
-        stopBits: 1,
-      });
-
-      usbSerialportRef.current = usbSerialport;
-      setSdrDeviceId(device.deviceId);
-      setIsSdrConnected(true);
-      console.log("SDR connected via USB OTG:", device);
-      await tuneSDR(MIN_FREQUENCY, usbSerialport);
-      dataIntervalRef.current = startDataFetching(usbSerialport);
-    } catch (error) {
-      console.error("SDR Connection Error:", error);
-      setIsSdrConnected(false);
-    }
-  }, []);
-
-  const startDataFetching = useCallback((usbSerialport: any) => {
-    return setInterval(() => {
-      if (isMountedRef.current) {
-        fetchSDRData(usbSerialport);
-      }
-    }, 100);
-  }, []);
-
-  const fetchSDRData = useCallback(async (usbSerialport: any) => {
-    if (!isSdrConnected || !sdrDeviceId || !isMountedRef.current) return;
-
-    try {
-      if (sdrSubscriptionRef.current) {
-        sdrSubscriptionRef.current();
-        sdrSubscriptionRef.current = null;
-      }
-
-      const sub = usbSerialport.onReceived((event: any) => {
-        if (!event.data || !isMountedRef.current) return;
-        const rawData = new TextEncoder().encode(event.data);
-        const iqSamples = new Uint8Array(rawData);
-        const newData = new Array(100).fill(0).map((_, i) => {
-          const index = Math.floor((i / 100) * iqSamples.length);
-          const iSample = iqSamples[index] || 0;
-          const qSample = iqSamples[index + 1] || 0;
-          return Math.sqrt(iSample * iSample + qSample * qSample) / 255;
-        });
-
-        setWaveformData(newData);
-        if (isPlaying && isRecording) {
-          playRealTimeAudio(newData, true);
-        } else if (isPlaying) {
-          playRealTimeAudio(newData, false);
-        }
-      });
-
-      sdrSubscriptionRef.current = () => sub.remove();
-    } catch (error) {
-      console.error("SDR Read Error:", error);
-    }
-  }, [isSdrConnected, sdrDeviceId, isPlaying, isRecording]);
-
-  const tuneSDR = useCallback(async (freq: number, usbSerialport?: any) => {
-    if (!isSdrConnected || !sdrDeviceId || !isMountedRef.current) return;
-
-    try {
-      const freqHz = freq * 1e6;
-      const command = `f${freqHz}\n`;
-      if (usbSerialport) {
-        await usbSerialport.send(command);
-      } else {
-        const devices = await UsbSerialManager.list();
-        const device = devices.find((d) => d.deviceId === sdrDeviceId);
-        if (device) {
-          const serialPort = await UsbSerialManager.open(device.deviceId, {
-            baudRate: 115200,
-            parity: Parity.None,
-            dataBits: 8,
-            stopBits: 1,
-          });
-          await serialPort.send(command);
-          await serialPort.close();
-        }
-      }
-      console.log(`Tuned SDR to ${freq} MHz`);
-    } catch (error) {
-      console.error("SDR Tune Error:", error);
-    }
-  }, [isSdrConnected, sdrDeviceId]);
-
-  // Component initialization and cleanup
   useEffect(() => {
     isMountedRef.current = true;
 
@@ -358,11 +242,9 @@ const FreeUseMode: React.FC = () => {
 
         const saved = await AsyncStorage.getItem("savedSignals");
         if (saved && isMountedRef.current) {
-          setSavedSignals(JSON.parse(saved));
+          setSavedSignals(JSON.parse(saved) as SavedSignal[]);
           console.log("Loaded saved signals");
         }
-
-        await initializeSDR();
       } catch (error) {
         console.error("Initialization error:", error);
       }
@@ -372,36 +254,34 @@ const FreeUseMode: React.FC = () => {
 
     return () => {
       isMountedRef.current = false;
-
-      if (dataIntervalRef.current) {
-        clearInterval(dataIntervalRef.current);
-        dataIntervalRef.current = null;
-      }
-
-      if (sdrSubscriptionRef.current) {
-        sdrSubscriptionRef.current();
-        sdrSubscriptionRef.current = null;
-      }
-
-      if (usbSerialportRef.current) {
-        usbSerialportRef.current.close().catch((error: any) => console.error("USB close error:", error));
-        usbSerialportRef.current = null;
-      }
-
       if (sound) {
-        sound.unloadAsync().catch((error: any) => console.error("Sound unload error:", error));
+        sound.unloadAsync().catch((error) => console.error("Sound unload error:", error));
         setSound(null);
       }
-
       debouncedSendAngles.cancel();
       stopLongPress();
       console.log("FreeUseMode unmounted, cleaned up resources");
     };
-  }, [connectedDevice, initializeSDR, debouncedSendAngles, stopLongPress]);
+  }, [connectedDevice, debouncedSendAngles, stopLongPress]);
+
+  const handleDataReceived = useCallback((samples: number[]) => {
+    const newData = new Array(100).fill(0).map((_, i) => {
+      const index = Math.floor((i / 100) * (samples.length / 2)) * 2;
+      const iSample = samples[index] || 0;
+      const qSample = samples[index + 1] || 0;
+      return Math.sqrt(iSample * iSample + qSample * qSample) / 255;
+    });
+    setWaveformData(newData);
+    if (isPlaying && isRecording) {
+      playRealTimeAudio(newData, true);
+    } else if (isPlaying) {
+      playRealTimeAudio(newData, false);
+    }
+  }, [isPlaying, isRecording]);
 
   const playRealTimeAudio = useCallback(
     async (data: number[], record: boolean) => {
-      if (!data.length || !isSdrConnected || !isMountedRef.current) return;
+      if (!data.length || !isMountedRef.current) return;
 
       try {
         if (sound) {
@@ -420,9 +300,7 @@ const FreeUseMode: React.FC = () => {
         const base64 = arrayBufferToBase64(wavBuffer);
         const uri = `data:audio/wav;base64,${base64}`;
 
-        if (record) {
-          recordedAudioRef.current = base64;
-        }
+        if (record) recordedAudioRef.current = base64;
 
         const { sound: newSound } = await Audio.Sound.createAsync(
           { uri },
@@ -439,13 +317,11 @@ const FreeUseMode: React.FC = () => {
         console.error("Audio Error:", error);
       }
     },
-    [isSdrConnected, isPlaying]
+    [isPlaying]
   );
 
   const handlePlayPause = async () => {
-    if (!sound || !isSdrConnected) {
-      return;
-    }
+    if (!sound) return;
 
     try {
       if (isPlaying) {
@@ -483,14 +359,13 @@ const FreeUseMode: React.FC = () => {
   };
 
   const adjustFrequency = useCallback(
-    async (delta: number) => {
+    (delta: number) => {
       setFrequency((prev) => {
         const newFreq = prev + delta;
         const constrainedFreq = Math.max(
           MIN_FREQUENCY,
           Math.min(MAX_FREQUENCY, parseFloat(newFreq.toFixed(3)))
         );
-        tuneSDR(constrainedFreq);
         const freqRange = MAX_FREQUENCY - MIN_FREQUENCY;
         const newAltitude = (constrainedFreq - MIN_FREQUENCY) * (180 / freqRange);
         const newAzimuth = (constrainedFreq - MIN_FREQUENCY) * (360 / freqRange);
@@ -499,7 +374,7 @@ const FreeUseMode: React.FC = () => {
         return constrainedFreq;
       });
     },
-    [tuneSDR, debouncedSendAngles]
+    [debouncedSendAngles]
   );
 
   const adjustAltitude = useCallback(
@@ -513,10 +388,9 @@ const FreeUseMode: React.FC = () => {
       const freqRange = MAX_FREQUENCY - MIN_FREQUENCY;
       const newFrequency = MIN_FREQUENCY + (newAltitude / 180) * freqRange;
       setFrequency(parseFloat(newFrequency.toFixed(3)));
-      tuneSDR(newFrequency);
       console.log(`Altitude adjusted to ${newAltitude}°`);
     },
-    [altitude, azimuth, debouncedSendAngles, tuneSDR, connectedDevice, checkConnection]
+    [altitude, azimuth, debouncedSendAngles, connectedDevice, checkConnection]
   );
 
   const adjustAzimuth = useCallback(
@@ -530,10 +404,9 @@ const FreeUseMode: React.FC = () => {
       const freqRange = MAX_FREQUENCY - MIN_FREQUENCY;
       const newFrequency = MIN_FREQUENCY + (newAzimuth / 360) * freqRange;
       setFrequency(parseFloat(newFrequency.toFixed(3)));
-      tuneSDR(newFrequency);
       console.log(`Azimuth adjusted to ${newAzimuth}°`);
     },
-    [altitude, azimuth, debouncedSendAngles, tuneSDR, connectedDevice, checkConnection]
+    [altitude, azimuth, debouncedSendAngles, connectedDevice, checkConnection]
   );
 
   const handleSaveSignal = async () => {
@@ -583,7 +456,6 @@ const FreeUseMode: React.FC = () => {
     const freqRange = MAX_FREQUENCY - MIN_FREQUENCY;
     const newFrequency = MIN_FREQUENCY + (alt / 180) * freqRange;
     setFrequency(parseFloat(newFrequency.toFixed(3)));
-    tuneSDR(newFrequency);
     setIsFindModalVisible(false);
     setFindAltitude("");
     setFindAzimuth("");
@@ -604,7 +476,6 @@ const FreeUseMode: React.FC = () => {
       await sound.unloadAsync();
       setSound(null);
     }
-    await tuneSDR(MIN_FREQUENCY);
     await debouncedSendAngles(90, 90);
     Alert.alert("Reset", "System reset to initial state");
     console.log("System reset");
@@ -615,7 +486,7 @@ const FreeUseMode: React.FC = () => {
       {data.map((amp, i) => (
         <View
           key={i}
-          style={[styles.waveBar, { height: `${2 + amp * 96}%` }]}
+          style={[styles.waveBar, { height: 2 + amp * 96 }]}
         />
       ))}
       <View
@@ -627,7 +498,7 @@ const FreeUseMode: React.FC = () => {
     </View>
   );
 
-  const createWavBuffer = (samples: Int16Array, sampleRate: number) => {
+  const createWavBuffer = (samples: Int16Array, sampleRate: number): ArrayBuffer => {
     const bufferLength = samples.length * 2;
     const wavLength = 44 + bufferLength;
     const buffer = new ArrayBuffer(wavLength);
@@ -660,7 +531,7 @@ const FreeUseMode: React.FC = () => {
     }
   };
 
-  const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
+  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
     const bytes = new Uint8Array(buffer);
     let binary = "";
     bytes.forEach((b) => (binary += String.fromCharCode(b)));
@@ -734,6 +605,8 @@ const FreeUseMode: React.FC = () => {
             ← Swipe left/right to adjust frequency →
           </Text>
         </View>
+
+        <RTLSDRComponent frequency={frequency} onDataReceived={handleDataReceived} />
 
         <View style={styles.freqControls}>
           <TouchableOpacity

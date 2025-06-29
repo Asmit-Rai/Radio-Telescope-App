@@ -12,41 +12,12 @@ import { MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useBLE } from "context/BLEContext";
 import * as Astronomy from "astronomy-engine";
-import {
-  UsbSerialManager,
-  Parity,
-  UsbSerial,
-} from "react-native-usb-serialport-for-android";
+import RTLSDRComponent from "components/RTLSDRComponent";
 
 // Observer coordinates
 const OBSERVER_LATITUDE = 28.6139; // Delhi
 const OBSERVER_LONGITUDE = 77.209;
 const OBSERVER_HEIGHT = 216; // meters
-
-// --- Helper Components ---
-const AudioVisualizer = () => {
-  const [bars, setBars] = useState([
-    20, 45, 30, 15, 40, 20, 45, 30, 15, 40, 20, 45, 30, 15,
-  ]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setBars((prevBars) => prevBars.map(() => Math.random() * 100 + 10));
-    }, 250);
-    return () => {
-      clearInterval(interval);
-      console.log("AudioVisualizer interval cleared");
-    };
-  }, []);
-
-  return (
-    <View style={styles.visualizerContainer}>
-      {bars.map((height, index) => (
-        <View key={index} style={[styles.visualizerBar, { height }]} />
-      ))}
-    </View>
-  );
-};
 
 // --- Interfaces ---
 interface Target {
@@ -57,24 +28,34 @@ interface Target {
   dec: string;
 }
 
-interface UsbSerialPort {
-  send: (data: string) => Promise<null>;
-  close: () => Promise<null>;
+interface AudioVisualizerProps {
+  data: number[];
 }
 
+// --- Helper Components ---
+const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ data }) => {
+  return (
+    <View style={styles.visualizerContainer}>
+      {data.map((height, index) => (
+        <View key={index} style={[styles.visualizerBar, { height: height * 100 + 10 }]} />
+      ))}
+    </View>
+  );
+};
+
+// --- Main Component ---
 const TargetDetail: React.FC = () => {
   const { target } = useLocalSearchParams<{ target: string }>();
   const { connectedDevice, writeData, checkConnection } = useBLE();
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTracking, setIsTracking] = useState(true);
-  const [hasSentAngles, setHasSentAngles] = useState(false);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [isTracking, setIsTracking] = useState<boolean>(true);
+  const [hasSentAngles, setHasSentAngles] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
   const [azimuth, setAzimuth] = useState<number>(0);
   const [altitude, setAltitude] = useState<number>(0);
   const [frequency, setFrequency] = useState<number>(0);
-  const [isSdrConnected, setIsSdrConnected] = useState<boolean>(false);
-  const [usbSerialport, setUsbSerialport] = useState<UsbSerialPort | null>(null);
-  const isMountedRef = useRef(true);
+  const [waveformData, setWaveformData] = useState<number[]>(new Array(14).fill(0));
+  const isMountedRef = useRef<boolean>(true);
   const lastAnglesRef = useRef<{ alt: number; az: number } | null>(null);
 
   // Parse target once
@@ -169,28 +150,6 @@ const TargetDetail: React.FC = () => {
     }
   }, []);
 
-  // --- Tune SDR ---
-  const tuneSDR = useCallback(
-    async (freq: number) => {
-      if (!isSdrConnected || !usbSerialport || !isMountedRef.current) {
-        console.log("SDR not connected or component unmounted");
-        return;
-      }
-      try {
-        const freqHz = freq * 1e6;
-        await usbSerialport.send(`f${freqHz}\n`);
-        console.log(`Tuned SDR to ${freq} MHz`);
-      } catch (error) {
-        console.error("SDR tuning error:", error);
-        if (isMountedRef.current) {
-          setIsSdrConnected(false);
-          setUsbSerialport(null);
-        }
-      }
-    },
-    [isSdrConnected, usbSerialport]
-  );
-
   // --- Send BLE Angles ---
   const sendAngles = useCallback(
     async (alt: number, az: number) => {
@@ -234,58 +193,28 @@ const TargetDetail: React.FC = () => {
     [connectedDevice, writeData, isTracking]
   );
 
-  // --- Initialize SDR ---
-  const initializeSDR = useCallback(
-    async (freq: number) => {
-      try {
-        const devices = await UsbSerialManager.list();
-        if (!devices.length) {
-          console.log("No SDR device found");
-          return null;
-        }
-        const device = devices[0];
-        await UsbSerialManager.tryRequestPermission(device.deviceId);
-        const port: UsbSerial = await UsbSerialManager.open(device.deviceId, {
-          baudRate: 115200,
-          parity: Parity.None,
-          dataBits: 8,
-          stopBits: 1,
-        });
-        if (isMountedRef.current) {
-          setUsbSerialport(port as unknown as UsbSerialPort);
-          setIsSdrConnected(true);
-          await tuneSDR(freq);
-          console.log(`SDR initialized: deviceId=${device.deviceId}, freq=${freq} MHz`);
-        }
-        return port;
-      } catch (error) {
-        console.error("SDR init error:", error);
-        return null;
-      }
-    },
-    [tuneSDR]
-  );
+  // --- Handle SDR Data ---
+  const handleDataReceived = useCallback((samples: number[]) => {
+    const newData = new Array(14).fill(0).map((_, i) => {
+      const index = Math.floor((i / 14) * (samples.length / 2)) * 2;
+      const iSample = samples[index] || 0;
+      const qSample = samples[index + 1] || 0;
+      return Math.sqrt(iSample * iSample + qSample * qSample) / 255;
+    });
+    if (isMountedRef.current) {
+      setWaveformData(newData);
+      console.log("Received SDR data, updated waveform");
+    }
+  }, []);
 
   // --- Stop Tracking ---
   const stopTracking = useCallback(async () => {
     if (!isMountedRef.current) return;
     setIsTracking(false);
     setIsRecording(false);
-    // Send default position
     await sendAngles(90, 90);
-    // Close SDR if connected
-    if (usbSerialport && isSdrConnected) {
-      try {
-        await usbSerialport.close();
-        console.log("SDR port closed on stop");
-      } catch (error) {
-        console.error("SDR close error:", error);
-      }
-      setUsbSerialport(null);
-      setIsSdrConnected(false);
-    }
     console.log("Tracking stopped");
-  }, [sendAngles, usbSerialport, isSdrConnected]);
+  }, [sendAngles]);
 
   // --- Connection Monitoring ---
   useEffect(() => {
@@ -357,36 +286,15 @@ const TargetDetail: React.FC = () => {
       if (isMountedRef.current) {
         setHasSentAngles(true);
       }
-
-      // Initialize SDR (non-blocking)
-      const port = await initializeSDR(freq);
-
-      // Return cleanup function
-      return async () => {
-        if (port) {
-          try {
-            await port.close();
-            console.log("SDR port closed");
-          } catch (error) {
-            console.error("SDR close error:", error);
-          }
-        }
-      };
     };
 
-    let cleanup: (() => Promise<void>) | undefined;
-    initialize().then((clean) => {
-      cleanup = clean;
-    });
+    initialize().catch((error) => console.error("Initialization error:", error));
 
     return () => {
       isMountedRef.current = false;
-      if (cleanup) {
-        cleanup().catch((error) => console.error("Cleanup error:", error));
-      }
       console.log("TargetDetail unmounted, cleaned up resources");
     };
-  }, [parsedTarget.current, connectedDevice, convertToAltAz, sendAngles, initializeSDR]);
+  }, [parsedTarget.current, connectedDevice, convertToAltAz, sendAngles]);
 
   if (!parsedTarget.current) return null;
 
@@ -394,7 +302,7 @@ const TargetDetail: React.FC = () => {
   return (
     <SafeAreaView style={styles.safeArea}>
       <ImageBackground
-        source={require("../../../assets/background/target-tracking-bg.png")} // Adjusted path
+        source={require("../../../assets/background/target-tracking-bg.png")}
         style={styles.backgroundImage}
         onError={(error) => console.error("Image load error:", error)}
       >
@@ -441,11 +349,11 @@ const TargetDetail: React.FC = () => {
 
           {/* Visualizer */}
           <View style={styles.planetContainer}>
-            {isSdrConnected ? (
-              <AudioVisualizer />
-            ) : (
-              <Text style={styles.placeholderText}>SDR Disconnected</Text>
-            )}
+            <RTLSDRComponent
+              frequency={frequency}
+              onDataReceived={handleDataReceived}
+            />
+            <AudioVisualizer data={waveformData} />
           </View>
 
           {/* Details Section */}
@@ -475,32 +383,31 @@ const TargetDetail: React.FC = () => {
           <View style={{ flex: 1 }} />
 
           {/* Footer */}
-         
-            <View style={styles.footerButtons}>
-              <TouchableOpacity style={styles.iconButton} onPress={stopTracking}>
-                <View style={styles.stopIconOuter}>
-                  <View style={styles.stopIconInner} />
-                </View>
-                <Text style={styles.iconButtonText}>STOP</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.recButton}
-                onPress={() => {
-                  setIsRecording(!isRecording);
-                  console.log(`Recording ${isRecording ? "paused" : "started"}`);
-                }}
-              >
-                <MaterialCommunityIcons
-                  name={isRecording ? "pause" : "record"}
-                  size={32}
-                  color="white"
-                />
-                <Text style={styles.recButtonText}>
-                  {isRecording ? "PAUSE" : "REC"}
-                </Text>
-              </TouchableOpacity>
-            </View>
+          <View style={styles.footerButtons}>
+            <TouchableOpacity style={styles.iconButton} onPress={stopTracking}>
+              <View style={styles.stopIconOuter}>
+                <View style={styles.stopIconInner} />
+              </View>
+              <Text style={styles.iconButtonText}>STOP</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.recButton}
+              onPress={() => {
+                setIsRecording(!isRecording);
+                console.log(`Recording ${isRecording ? "paused" : "started"}`);
+              }}
+            >
+              <MaterialCommunityIcons
+                name={isRecording ? "pause" : "record"}
+                size={32}
+                color="white"
+              />
+              <Text style={styles.recButtonText}>
+                {isRecording ? "PAUSE" : "REC"}
+              </Text>
+            </TouchableOpacity>
           </View>
+        </View>
       </ImageBackground>
     </SafeAreaView>
   );
@@ -597,11 +504,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginVertical: 15,
-  },
-  placeholderText: {
-    color: "#FF8C2B",
-    fontFamily: FONT_FAMILY_UI,
-    fontSize: 16,
   },
   visualizerContainer: {
     flexDirection: "row",

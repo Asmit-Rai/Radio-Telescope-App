@@ -3,8 +3,8 @@ import { View, Text, StyleSheet, SafeAreaView, TouchableOpacity, useWindowDimens
 import { AntDesign, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useBLE } from 'context/BLEContext';
-import { UsbSerialManager, Parity, UsbSerial } from 'react-native-usb-serialport-for-android';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import RTLSDRComponent from './RTLSDRComponent';
 
 type SavedSignal = {
   name: string;
@@ -14,45 +14,42 @@ type SavedSignal = {
   audioBase64?: string;
 };
 
-interface UsbSerialPort {
-  send: (data: string) => Promise<null>;
-  close: () => Promise<null>;
+interface WaveformProps {
+  data: number[];
 }
 
 const SavedSignalDetail: React.FC = () => {
   const { name, frequency, altitude, azimuth } = useLocalSearchParams<{ name: string; frequency: string; altitude: string; azimuth: string }>();
   const { connectedDevice, writeData, checkConnection } = useBLE();
-  const [isSdrConnected, setIsSdrConnected] = useState(false);
-  const [usbSerialport, setUsbSerialport] = useState<UsbSerialPort | null>(null);
   const [status, setStatus] = useState<string>('Checking...');
-  const [battery, setBattery] = useState(100);
-  const [isTracking, setIsTracking] = useState(true);
-  const [hasSentAngles, setHasSentAngles] = useState(false);
-  const [isPlaying, setIsPlaying] = useState(false);
+  const [battery, setBattery] = useState<number>(100);
+  const [isTracking, setIsTracking] = useState<boolean>(true);
+  const [hasSentAngles, setHasSentAngles] = useState<boolean>(false);
+  const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [allSignals, setAllSignals] = useState<SavedSignal[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
-  const isMountedRef = useRef(true);
+  const [waveformData, setWaveformData] = useState<number[]>([]);
+  const isMountedRef = useRef<boolean>(true);
   const lastAnglesRef = useRef<{ alt: number; az: number } | null>(null);
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const barCount = Math.floor(SCREEN_WIDTH / 4);
-  const waveformData = new Array(barCount).fill(0).map(() => Math.random() * 100 + 10);
 
   const signal = useRef<SavedSignal>({
     name: decodeURIComponent(name || 'Unknown'),
     frequency: parseFloat(frequency || '0'),
-    altitude: parseFloat(altitude || '90'), // Default to 90
-    azimuth: parseFloat(azimuth || '90'),   // Default to 90
+    altitude: parseFloat(altitude || '90'),
+    azimuth: parseFloat(azimuth || '90'),
     audioBase64: undefined,
   });
 
-  const Waveform = React.memo(() => {
+  const Waveform = React.memo(({ data }: WaveformProps) => {
     return (
       <FlatList
-        data={waveformData}
+        data={data}
         keyExtractor={(_, index) => index.toString()}
         horizontal
         style={styles.visualizerContainer}
-        renderItem={({ item }) => <View style={[styles.visualizerBar, { height: item }]} />}
+        renderItem={({ item }) => <View style={[styles.visualizerBar, { height: item * 100 + 10 }]} />}
       />
     );
   });
@@ -63,7 +60,7 @@ const SavedSignalDetail: React.FC = () => {
       try {
         const saved = await AsyncStorage.getItem('savedSignals');
         if (saved) {
-          const signals = JSON.parse(saved);
+          const signals = JSON.parse(saved) as SavedSignal[];
           setAllSignals(signals);
           const currentFreq = parseFloat(frequency || '0');
           const index = signals.findIndex((s: SavedSignal) => s.frequency === currentFreq);
@@ -77,51 +74,18 @@ const SavedSignalDetail: React.FC = () => {
     loadAllSignals();
   }, [frequency]);
 
-  const initializeSDR = useCallback(async (freq: number) => {
-    try {
-      const devices = await UsbSerialManager.list();
-      if (!devices.length) {
-        console.log('No SDR device found');
-        return null;
-      }
-      const device = devices[0];
-      await UsbSerialManager.tryRequestPermission(device.deviceId);
-      const port: UsbSerial = await UsbSerialManager.open(device.deviceId, {
-        baudRate: 115200,
-        parity: Parity.None,
-        dataBits: 8,
-        stopBits: 1,
-      });
-      if (isMountedRef.current) {
-        setUsbSerialport(port as unknown as UsbSerialPort);
-        setIsSdrConnected(true);
-        await tuneSDR(freq);
-        console.log(`SDR initialized: deviceId=${device.deviceId}, freq=${freq} MHz`);
-      }
-      return port;
-    } catch (error) {
-      console.error('SDR init error:', error);
-      return null;
+  const handleDataReceived = useCallback((samples: number[]) => {
+    const newData = new Array(barCount).fill(0).map((_, i) => {
+      const index = Math.floor((i / barCount) * (samples.length / 2)) * 2;
+      const iSample = samples[index] || 0;
+      const qSample = samples[index + 1] || 0;
+      return Math.sqrt(iSample * iSample + qSample * qSample) / 255;
+    });
+    if (isMountedRef.current) {
+      setWaveformData(newData);
+      console.log('Received SDR data, updated waveform');
     }
-  }, []);
-
-  const tuneSDR = useCallback(async (freq: number) => {
-    if (!isSdrConnected || !usbSerialport || !isMountedRef.current) {
-      console.log('SDR not connected or component unmounted');
-      return;
-    }
-    try {
-      const freqHz = freq * 1e6;
-      await usbSerialport.send(`f${freqHz}\n`);
-      console.log(`Tuned SDR to ${freq} MHz`);
-    } catch (error) {
-      console.error('SDR tuning error:', error);
-      if (isMountedRef.current) {
-        setIsSdrConnected(false);
-        setUsbSerialport(null);
-      }
-    }
-  }, [isSdrConnected, usbSerialport]);
+  }, [barCount]);
 
   const sendAngles = useCallback(async (alt: number, az: number) => {
     if (!connectedDevice || !writeData || !isMountedRef.current || !isTracking) {
@@ -160,19 +124,9 @@ const SavedSignalDetail: React.FC = () => {
     if (!isMountedRef.current) return;
     setIsTracking(false);
     setIsPlaying(false);
-    await sendAngles(90, 90); // Reset to default position
-    if (usbSerialport && isSdrConnected) {
-      try {
-        await usbSerialport.close();
-        console.log('SDR port closed on stop');
-      } catch (error) {
-        console.error('SDR close error:', error);
-      }
-      setUsbSerialport(null);
-      setIsSdrConnected(false);
-    }
+    await sendAngles(90, 90);
     console.log('Tracking stopped');
-  }, [sendAngles, usbSerialport, isSdrConnected]);
+  }, [sendAngles]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -221,23 +175,9 @@ const SavedSignalDetail: React.FC = () => {
       if (isMountedRef.current) {
         setHasSentAngles(true);
       }
-      const port = await initializeSDR(signal.current.frequency);
-      return async () => {
-        if (port) {
-          try {
-            await port.close();
-            console.log('SDR port closed');
-          } catch (error) {
-            console.error('SDR close error:', error);
-          }
-        }
-      };
     };
 
-    let cleanup: (() => Promise<void>) | undefined;
-    initialize().then((clean) => {
-      cleanup = clean;
-    });
+    initialize().catch((error) => console.error('Initialization error:', error));
 
     const batteryInterval = setInterval(() => {
       setBattery((prev) => Math.max(80, Math.min(100, prev - 1)));
@@ -246,12 +186,9 @@ const SavedSignalDetail: React.FC = () => {
     return () => {
       isMountedRef.current = false;
       clearInterval(batteryInterval);
-      if (cleanup) {
-        cleanup().catch((error) => console.error('Cleanup error:', error));
-      }
       console.log('SavedSignalDetail unmounted, cleaned up resources');
     };
-  }, [connectedDevice, sendAngles, initializeSDR]);
+  }, [connectedDevice, sendAngles]);
 
   const handlePlayPause = useCallback(() => {
     setIsPlaying((prev) => !prev);
@@ -305,7 +242,11 @@ const SavedSignalDetail: React.FC = () => {
           </View>
 
           <View style={styles.planetContainer}>
-            {isSdrConnected ? <Waveform /> : <Text style={styles.placeholderText}>SDR Disconnected</Text>}
+            <RTLSDRComponent
+              frequency={signal.current.frequency}
+              onDataReceived={handleDataReceived}
+            />
+            <Waveform data={waveformData} />
           </View>
 
           <View style={styles.detailsContainer}>
@@ -434,11 +375,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginVertical: 15,
-  },
-  placeholderText: {
-    color: '#FF8C2B',
-    fontFamily: 'Shantell',
-    fontSize: 16,
   },
   visualizerContainer: {
     flexDirection: 'row',
