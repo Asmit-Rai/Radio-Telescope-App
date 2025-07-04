@@ -15,13 +15,17 @@ import base64 from "react-native-base64";
 // Initialize BleManager once
 const bleManager = new BleManager();
 
-// Constants
+// Constants - Updated to match Arduino code
 const STORAGE_KEYS = {
   USER_LOCATION: "user_location",
   CONNECTED_DEVICE_NAME: "connected_device_name",
   LAST_CONNECTED_DEVICE_ID: "last_connected_device_id",
   SCAN_TIMESTAMP: "last_scan_timestamp",
 } as const;
+
+// Arduino service and characteristic UUIDs
+const SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
+const CHARACTERISTIC_UUID = "abcd1234-1234-1234-1234-abcdef123456";
 
 const MIN_RSSI = -80;
 const SCAN_DURATION_MS = 10000;
@@ -97,7 +101,6 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({
   const commandQueueRef = useRef<Command[]>([]);
   const storageQueueRef = useRef<StorageOperation[]>([]);
   const processingLockRef = useRef<boolean>(false);
-  const characteristicCache = useRef<{ serviceUUID: string; characteristicUUID: string } | null>(null);
   const lastPingTimeRef = useRef<number>(0);
   const retryCountRef = useRef<number>(0);
   const circuitBreakerRef = useRef<boolean>(false);
@@ -318,7 +321,6 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({
     setIsProcessingCommand(false);
     commandQueueRef.current = [];
     processingLockRef.current = false;
-    characteristicCache.current = null;
     console.log("✅ Connection cleaned up");
   }, []);
 
@@ -507,45 +509,17 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({
       const encodedData = base64.encode(jsonData);
       console.log(`📤 Sending data: ${jsonData}`);
 
-      let serviceUUID = characteristicCache.current?.serviceUUID;
-      let characteristicUUID = characteristicCache.current?.characteristicUUID;
-
-      if (!serviceUUID || !characteristicUUID) {
-        const services = await connectedDevice.services();
-        for (const service of services) {
-          const characteristics = await service.characteristics();
-          const writableChar = characteristics.find(c => c.isWritableWithoutResponse);
-          if (writableChar) {
-            serviceUUID = service.uuid;
-            characteristicUUID = writableChar.uuid;
-            characteristicCache.current = { serviceUUID, characteristicUUID };
-            break;
-          }
-        }
-      }
-
-      if (!serviceUUID || !characteristicUUID) {
-        throw new Error("No writable characteristic found");
-      }
-
-      // Validate characteristic
-      const characteristics = await connectedDevice.characteristicsForService(serviceUUID);
-      const targetChar = characteristics.find(c => c.uuid === characteristicUUID);
-      if (!targetChar?.isWritableWithoutResponse) {
-        characteristicCache.current = null;
-        throw new Error("Invalid or non-writable characteristic");
-      }
-
+      // Use the specific UUIDs that match the Arduino code
       await connectedDevice.writeCharacteristicWithoutResponseForService(
-        serviceUUID,
-        characteristicUUID,
+        SERVICE_UUID,
+        CHARACTERISTIC_UUID,
         encodedData
       );
 
       clearTimeout(timeout);
       resolve(true);
       retryCountRef.current = 0;
-      console.log(`✅ Wrote to service ${serviceUUID}, characteristic ${characteristicUUID}`);
+      console.log(`✅ Wrote to service ${SERVICE_UUID}, characteristic ${CHARACTERISTIC_UUID}`);
     } catch (error) {
       clearTimeout(timeout);
       console.error("❌ Write error:", error);
@@ -864,7 +838,6 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({
       bleManager.stopDeviceScan();
       processingLockRef.current = false;
       storageQueueRef.current = [];
-      characteristicCache.current = null;
       console.log("✅ BLE Provider cleanup completed");
     };
   }, []);
