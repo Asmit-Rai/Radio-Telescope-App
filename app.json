@@ -8,6 +8,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "radiotelescope",
     "userInterfaceStyle": "automatic",
+    "main": "index.js",
     "newArchEnabled": false,
     "ios": {
       "supportsTablet": true
@@ -49,7 +50,9 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-audio",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React from "react";
 import {
   StyleSheet,
   View,
@@ -8,11 +8,10 @@ import {
   FlatList,
   SafeAreaView,
   Platform,
-  Alert,
+
 } from "react-native";
 import { AntDesign } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useBLE } from "context/BLEContext";
 
 
 interface Target {
@@ -285,18 +284,18 @@ const targetsData: Target[] = [
 ];
 
 const TargetTrackingList: React.FC = () => {
-  const { connectedDevice, checkConnection } = useBLE();
+  // const { connectedDevice, checkConnection } = useBLE();
 
-  useEffect(() => {
-    if (connectedDevice) {
-      checkConnection(connectedDevice);
-    } else {
-      Alert.alert(
-        "Warning",
-        "No device connected. Please connect via Space Connect."
-      );
-    }
-  }, [connectedDevice, checkConnection]);
+  // useEffect(() => {
+  //   if (connectedDevice) {
+  //     checkConnection(connectedDevice);
+  //   } else {
+  //     Alert.alert(
+  //       "Warning",
+  //       "No device connected. Please connect via Space Connect."
+  //     );
+  //   }
+  // }, [connectedDevice, checkConnection]);
 
   const handleTargetPress = (target: Target) => {
     router.push({

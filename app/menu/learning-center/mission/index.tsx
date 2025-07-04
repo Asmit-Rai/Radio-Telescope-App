@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import { Mission, initialMissions } from 'data/dummyData';
+import { Mission, initialMissions } from '../../../../data/dummyData';
 
 const GOAL = 20;
 

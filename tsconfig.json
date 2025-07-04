@@ -3,9 +3,6 @@
   "compilerOptions": {
     "strict": true,
     "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    },
     "forceConsistentCasingInFileNames": true,
     "module": "ESNext"
   },
@@ -14,5 +11,5 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
-  ]
+, "index.js", "metro.config.js"  ]
 }

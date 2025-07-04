@@ -19,11 +19,11 @@ import {
 } from "@expo/vector-icons";
 import { Audio } from "expo-av";
 import { router } from "expo-router";
-import { useBLE } from "context/BLEContext";
+import { useBLE } from "../../../context/BLEContext";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { debounce } from "lodash";
-import RTLSDRComponent from "components/RTLSDRComponent";
+import RTLSDRComponent from "../../../components/RTLSDRComponent";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 

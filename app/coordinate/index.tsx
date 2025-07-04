@@ -15,7 +15,7 @@ import {
   PermissionsAndroid,
 } from "react-native";
 import * as Location from "expo-location";
-import { useBLE } from "context/BLEContext";
+import { useBLE } from "../../context/BLEContext";
 
 const CoordinateInputScreen = () => {
   const router = useRouter();

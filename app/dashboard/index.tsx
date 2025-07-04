@@ -14,7 +14,7 @@ import { useRouter } from "expo-router";
 import CardTile from "../../components/CardTile";
 import Exit from "../../components/Exit"; // Confirm this exists and doesn't crash if 'visible' is false
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useBLE } from "context/BLEContext";
+import { useBLE } from "../../context/BLEContext";
 
 const feeIcon: ImageSourcePropType = require("../../assets/icons/free.png");
 const targetIcon: ImageSourcePropType = require("../../assets/icons/target.png");

@@ -1,4 +1,11 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { 
+  useState, 
+  useEffect, 
+  useCallback, 
+  useRef, 
+  useMemo,
+  memo 
+} from "react";
 import {
   View,
   Text,
@@ -10,14 +17,19 @@ import {
 } from "react-native";
 import { MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useBLE } from "context/BLEContext";
+import { useBLE } from "../../../context/BLEContext";
 import * as Astronomy from "astronomy-engine";
-import RTLSDRComponent from "components/RTLSDRComponent";
+import RTLSDRComponent from "../../../components/RTLSDRComponent";
 
-// Observer coordinates
-const OBSERVER_LATITUDE = 28.6139; // Delhi
-const OBSERVER_LONGITUDE = 77.209;
-const OBSERVER_HEIGHT = 216; // meters
+// Rate limiting constants
+const MAX_COMMANDS_PER_SECOND = 10;
+const COMMAND_DEBOUNCE_DELAY = 300;
+const CONNECTION_CHECK_INTERVAL = 30000;
+
+// RSSI thresholds for signal strength
+const RSSI_EXCELLENT = -65;
+const RSSI_GOOD = -85;
+const RSSI_WEAK = -95;
 
 // --- Interfaces ---
 interface Target {
@@ -32,62 +44,127 @@ interface AudioVisualizerProps {
   data: number[];
 }
 
+interface CommandQueueItem {
+  alt: number;
+  az: number;
+  timestamp: number;
+  priority: number; // 0 = highest priority
+}
+
 // --- Helper Components ---
-const AudioVisualizer: React.FC<AudioVisualizerProps> = ({ data }) => {
+const AudioVisualizer: React.FC<AudioVisualizerProps> = memo(({ data }) => {
+  const visualizerBars = useMemo(() => 
+    data.map((height, index) => (
+      <View 
+        key={index} 
+        style={[styles.visualizerBar, { height: height * 100 + 10 }]} 
+      />
+    )), [data]
+  );
+
   return (
     <View style={styles.visualizerContainer}>
-      {data.map((height, index) => (
-        <View key={index} style={[styles.visualizerBar, { height: height * 100 + 10 }]} />
-      ))}
+      {visualizerBars}
     </View>
   );
-};
+});
+
+AudioVisualizer.displayName = 'AudioVisualizer';
+
+// --- Rate Limiter Class ---
+class CommandRateLimiter {
+  private commandTimes: number[] = [];
+  private readonly maxCommandsPerSecond: number;
+
+  constructor(maxCommandsPerSecond: number = MAX_COMMANDS_PER_SECOND) {
+    this.maxCommandsPerSecond = maxCommandsPerSecond;
+  }
+
+  canExecuteCommand(): boolean {
+    const now = Date.now();
+    // Remove commands older than 1 second
+    this.commandTimes = this.commandTimes.filter(time => now - time < 1000);
+    
+    if (this.commandTimes.length >= this.maxCommandsPerSecond) {
+      return false;
+    }
+    
+    this.commandTimes.push(now);
+    return true;
+  }
+
+  reset(): void {
+    this.commandTimes = [];
+  }
+}
 
 // --- Main Component ---
-const TargetDetail: React.FC = () => {
+const TargetDetail: React.FC = memo(() => {
   const { target } = useLocalSearchParams<{ target: string }>();
-  const { connectedDevice, writeData, checkConnection } = useBLE();
+  const { connectedDevice, writeData, checkConnection, getUserLocation, getRSSI } = useBLE();
+  
+  // State with functional updates to prevent unnecessary re-renders
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const [isTracking, setIsTracking] = useState<boolean>(true);
   const [hasSentAngles, setHasSentAngles] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
-  const [azimuth, setAzimuth] = useState<number>(0);
-  const [altitude, setAltitude] = useState<number>(0);
+  const [currentAngles, setCurrentAngles] = useState({ azimuth: 0, altitude: 0 });
   const [frequency, setFrequency] = useState<number>(0);
-  const [waveformData, setWaveformData] = useState<number[]>(new Array(14).fill(0));
+  const [waveformData, setWaveformData] = useState<number[]>(() => new Array(14).fill(0));
+  const [rssi, setRssi] = useState<number | null>(null);
+  
+  // Refs for values that don't need to trigger re-renders
   const isMountedRef = useRef<boolean>(true);
   const lastAnglesRef = useRef<{ alt: number; az: number } | null>(null);
+  const commandQueue = useRef<CommandQueueItem[]>([]);
+  const isProcessingCommand = useRef<boolean>(false);
+  const rateLimiter = useRef<CommandRateLimiter>(new CommandRateLimiter());
+  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const connectionCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Parse target once
-  const parsedTarget = useRef<Target | null>(null);
-  useEffect(() => {
+  // Parse target once with memoization
+  const parsedTarget = useMemo<Target | null>(() => {
     try {
-      parsedTarget.current = target ? JSON.parse(target) : null;
-      if (!parsedTarget.current) {
-        Alert.alert("Error", "No target selected", [
-          { text: "OK", onPress: () => router.back() },
-        ]);
-        console.log("No target selected");
-      }
+      return target ? JSON.parse(target) : null;
     } catch (error) {
       console.error("Error parsing target:", error);
-      Alert.alert("Error", "Invalid target data", [
-        { text: "OK", onPress: () => router.back() },
-      ]);
+      return null;
     }
   }, [target]);
 
-  // --- Convert RA/Dec to Alt/Az ---
-  const convertToAltAz = useCallback((target: Target) => {
-    const { name, ra, dec } = target;
+  // Alert for invalid target (separate effect to prevent blocking)
+  useEffect(() => {
+    if (!parsedTarget) {
+      Alert.alert("Error", "No target selected", [
+        { text: "OK", onPress: () => router.back() },
+      ]);
+    }
+  }, [parsedTarget]);
+
+  // Memoized coordinate conversion using user location
+  const convertToAltAz = useCallback(async (targetData: Target) => {
+    const { name, ra, dec } = targetData;
     const date = new Date();
-    const observer = new Astronomy.Observer(
-      OBSERVER_LATITUDE,
-      OBSERVER_LONGITUDE,
-      OBSERVER_HEIGHT
-    );
+    let latitude: number, longitude: number;
 
     try {
+      const location = await getUserLocation();
+      const [lat, lon] = location.split(',').map(coord => parseFloat(coord.trim()));
+      if (isNaN(lat) || isNaN(lon)) {
+        throw new Error("Invalid location coordinates");
+      }
+      latitude = lat;
+      longitude = lon;
+    } catch (error) {
+      console.error("Error getting user location, using default:", error);
+      latitude = 28.6139; // Default to Delhi
+      longitude = 77.209;
+    }
+
+    const observer = new Astronomy.Observer(latitude, longitude, 0);
+
+    try {
+      // Handle celestial bodies
       if (["Sun", "Jupiter"].includes(name)) {
         const vector = Astronomy.GeoVector(name as Astronomy.Body, date, true);
         const equatorial = Astronomy.EquatorFromVector(vector);
@@ -101,14 +178,16 @@ const TargetDetail: React.FC = () => {
         return { azimuth: horizontal.azimuth, altitude: horizontal.altitude };
       }
 
+      // Handle dynamic coordinates
       if (
         ["Varies", "Dynamic", "Local", "Sweep"].includes(ra) ||
         ["Varies", "Dynamic", "Local", "Sweep"].includes(dec)
       ) {
         console.log(`Dynamic coordinates for ${name}, using default position`);
-        return { azimuth: 90, altitude: 90 }; // Default to zenith
+        return { azimuth: 90, altitude: 90 };
       }
 
+      // Parse RA/Dec coordinates
       const raParts = ra.match(/\d+(\.\d+)?/g)?.map(Number);
       if (!raParts || raParts.length === 0) {
         throw new Error(`Invalid RA format for ${name}: ${ra}`);
@@ -148,52 +227,101 @@ const TargetDetail: React.FC = () => {
       );
       return { azimuth: 90, altitude: 90 };
     }
-  }, []);
+  }, [getUserLocation]);
 
-  // --- Send BLE Angles ---
-  const sendAngles = useCallback(
-    async (alt: number, az: number) => {
-      if (!connectedDevice || !writeData || !isMountedRef.current || !isTracking) {
-        console.log("BLE not ready or tracking stopped");
-        return;
+  // Process command queue with rate limiting
+  const processCommandQueue = useCallback(async () => {
+    if (
+      isProcessingCommand.current || 
+      commandQueue.current.length === 0 ||
+      !rateLimiter.current.canExecuteCommand()
+    ) {
+      // If rate limited, try again after a short delay
+      if (commandQueue.current.length > 0 && !isProcessingCommand.current) {
+        setTimeout(processCommandQueue, 100);
+      }
+      return;
+    }
+
+    isProcessingCommand.current = true;
+    const command = commandQueue.current.shift()!;
+    const { alt, az } = command;
+
+    try {
+      const success = await writeData(alt, az);
+      if (!success) {
+        throw new Error("Write failed");
+      }
+      
+      if (isMountedRef.current) {
+        // Batch state updates
+        setCurrentAngles(prev => {
+          if (prev.altitude !== alt || prev.azimuth !== az) {
+            return { altitude: alt, azimuth: az };
+          }
+          return prev;
+        });
+        lastAnglesRef.current = { alt, az };
+        console.log(`Sent angles: Alt=${alt}, Az=${az}`);
+      }
+    } catch (error) {
+      console.error("BLE error:", error);
+      Alert.alert("Error", "Failed to send angles");
+      if (isMountedRef.current) {
+        setIsConnected(false);
+      }
+    } finally {
+      isProcessingCommand.current = false;
+      // Process next command if queue not empty
+      if (commandQueue.current.length > 0) {
+        setTimeout(processCommandQueue, 50);
+      }
+    }
+  }, [writeData]);
+
+  // Debounced angle sending with rate limiting
+  const sendAnglesDebounced = useCallback(
+    (alt: number, az: number, priority: number = 1) => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
       }
 
-      const constrainedAlt = Math.max(0, Math.min(180, Math.round(alt)));
-      const constrainedAz = Math.max(0, Math.min(360, Math.round(az)));
+      debounceTimeoutRef.current = setTimeout(() => {
+        if (!connectedDevice || !writeData || !isMountedRef.current || !isTracking) {
+          console.log("BLE not ready or tracking stopped");
+          return;
+        }
 
-      // Skip if angles haven't changed
-      if (
-        lastAnglesRef.current &&
-        lastAnglesRef.current.alt === constrainedAlt &&
-        lastAnglesRef.current.az === constrainedAz
-      ) {
-        console.log("Angles unchanged, skipping write");
-        return;
-      }
+        const constrainedAlt = Math.max(0, Math.min(180, Math.round(alt)));
+        const constrainedAz = Math.max(0, Math.min(360, Math.round(az)));
 
-      try {
-        const success = await writeData(constrainedAlt, constrainedAz);
-        if (!success) {
-          throw new Error("Write failed");
+        // Skip if angles haven't changed significantly (within 1 degree)
+        if (
+          lastAnglesRef.current &&
+          Math.abs(lastAnglesRef.current.alt - constrainedAlt) < 1 &&
+          Math.abs(lastAnglesRef.current.az - constrainedAz) < 1
+        ) {
+          console.log("Angles unchanged (within tolerance), skipping write");
+          return;
         }
-        if (isMountedRef.current) {
-          setAltitude(constrainedAlt);
-          setAzimuth(constrainedAz);
-          lastAnglesRef.current = { alt: constrainedAlt, az: constrainedAz };
-          console.log(`Sent angles: Alt=${constrainedAlt}, Az=${constrainedAz}`);
-        }
-      } catch (error) {
-        console.error("BLE error:", error);
-        Alert.alert("Error", "Failed to send angles");
-        if (isMountedRef.current) {
-          setIsConnected(false);
-        }
-      }
+
+        // Add command to priority queue
+        const command: CommandQueueItem = {
+          alt: constrainedAlt,
+          az: constrainedAz,
+          timestamp: Date.now(),
+          priority
+        };
+
+        commandQueue.current.push(command);
+        commandQueue.current.sort((a, b) => a.priority - b.priority); // Sort by priority
+        processCommandQueue();
+      }, COMMAND_DEBOUNCE_DELAY);
     },
-    [connectedDevice, writeData, isTracking]
+    [connectedDevice, writeData, isTracking, processCommandQueue]
   );
 
-  // --- Handle SDR Data ---
+  // Handle SDR data with memoization
   const handleDataReceived = useCallback((samples: number[]) => {
     const newData = new Array(14).fill(0).map((_, i) => {
       const index = Math.floor((i / 14) * (samples.length / 2)) * 2;
@@ -201,104 +329,169 @@ const TargetDetail: React.FC = () => {
       const qSample = samples[index + 1] || 0;
       return Math.sqrt(iSample * iSample + qSample * qSample) / 255;
     });
+
     if (isMountedRef.current) {
-      setWaveformData(newData);
-      console.log("Received SDR data, updated waveform");
+      setWaveformData(prevData => {
+        // Only update if data has actually changed
+        const hasChanged = newData.some((val, idx) => Math.abs(val - prevData[idx]) > 0.01);
+        return hasChanged ? newData : prevData;
+      });
     }
   }, []);
 
-  // --- Stop Tracking ---
+  // Stop tracking with cleanup
   const stopTracking = useCallback(async () => {
     if (!isMountedRef.current) return;
+    
     setIsTracking(false);
     setIsRecording(false);
-    await sendAngles(90, 90);
+    
+    // Clear command queue and send stop command with highest priority
+    commandQueue.current = [];
+    rateLimiter.current.reset();
+    
+    await sendAnglesDebounced(90, 90, 0); // Priority 0 for stop command
     console.log("Tracking stopped");
-  }, [sendAngles]);
+  }, [sendAnglesDebounced]);
 
-  // --- Connection Monitoring ---
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-
-    const checkStatus = async () => {
-      if (!isMountedRef.current || !connectedDevice) {
-        if (isMountedRef.current) {
-          setIsConnected(false);
-        }
-        return;
+  // Optimized connection monitoring with RSSI
+  const checkConnectionStatus = useCallback(async () => {
+    if (!isMountedRef.current || !connectedDevice) {
+      if (isMountedRef.current) {
+        setIsConnected(false);
+        setRssi(null);
       }
-
-      try {
-        const connection = await checkConnection(connectedDevice);
-        if (isMountedRef.current) {
-          setIsConnected(connection);
-          console.log(`Connection check: connected=${connection}`);
-        }
-      } catch (error) {
-        console.error("Connection check error:", error);
-        if (isMountedRef.current) {
-          setIsConnected(false);
-        }
-      }
-    };
-
-    checkStatus();
-    interval = setInterval(checkStatus, 30000);
-
-    return () => {
-      clearInterval(interval);
-      console.log("Connection check interval cleared");
-    };
-  }, [connectedDevice, checkConnection]);
-
-  // --- Initialization ---
-  useEffect(() => {
-    isMountedRef.current = true;
-
-    if (!parsedTarget.current || hasSentAngles) {
       return;
     }
 
-    if (!connectedDevice) {
-      Alert.alert("Error", "No BLE device connected", [
-        { text: "OK", onPress: () => router.replace("/") },
-      ]);
-      console.log("No BLE device connected");
+    try {
+      const connection = await checkConnection(connectedDevice);
+      const rssiValue = connection ? await getRSSI() : null;
+      if (isMountedRef.current) {
+        setIsConnected(prevConnection => {
+          return prevConnection !== connection ? connection : prevConnection;
+        });
+        setRssi(rssiValue);
+      }
+    } catch (error) {
+      console.error("Connection check error:", error);
+      if (isMountedRef.current) {
+        setIsConnected(false);
+        setRssi(null);
+      }
+    }
+  }, [connectedDevice, checkConnection, getRSSI]);
+
+  // Connection monitoring with proper cleanup
+  useEffect(() => {
+    checkConnectionStatus();
+    
+    const scheduleNextCheck = () => {
+      connectionCheckTimeoutRef.current = setTimeout(() => {
+        if (isMountedRef.current) {
+          checkConnectionStatus().then(scheduleNextCheck);
+        }
+      }, CONNECTION_CHECK_INTERVAL);
+    };
+
+    scheduleNextCheck();
+
+    return () => {
+      // Store the current rateLimiter value to use in cleanup
+      const rateLimiterInstance = rateLimiter.current;
+      if (connectionCheckTimeoutRef.current) {
+        clearTimeout(connectionCheckTimeoutRef.current);
+      }
+      rateLimiterInstance.reset();
+    };
+  }, [checkConnectionStatus]);
+
+  // Initialization with proper dependency management
+  useEffect(() => {
+    if (!parsedTarget || hasSentAngles || !connectedDevice) {
+      if (!connectedDevice && parsedTarget) {
+        Alert.alert("Error", "No BLE device connected", [
+          { text: "OK", onPress: () => router.replace("/") },
+        ]);
+      }
       return;
     }
 
     const initialize = async () => {
       if (!isMountedRef.current || !isTracking) return;
 
-      // Parse frequency
-      const freqMatch = parsedTarget.current?.frequency
-        ? parsedTarget.current.frequency.match(/(\d+\.?\d*)/)
-        : null;
-      const freq = freqMatch ? parseFloat(freqMatch[0]) : 20;
-      if (isMountedRef.current) {
-        setFrequency(freq);
-        console.log(`Frequency set to ${freq} MHz`);
-      }
+      try {
+        // Parse frequency
+        const freqMatch = parsedTarget.frequency?.match(/(\d+\.?\d*)/);
+        const freq = freqMatch ? parseFloat(freqMatch[0]) : 20;
+        
+        setFrequency(prevFreq => prevFreq !== freq ? freq : prevFreq);
 
-      // Convert coordinates and send angles
-      const { azimuth: az, altitude: alt } = convertToAltAz(parsedTarget.current!);
-      await sendAngles(alt, az);
-      if (isMountedRef.current) {
+        // Convert coordinates and send angles
+        const { azimuth: az, altitude: alt } = await convertToAltAz(parsedTarget);
+        await sendAnglesDebounced(alt, az, 0); // High priority for initial positioning
+        
         setHasSentAngles(true);
+        console.log(`Initialized: Frequency=${freq}MHz, Alt=${alt}°, Az=${az}°`);
+      } catch (error) {
+        console.error("Initialization error:", error);
       }
     };
 
-    initialize().catch((error) => console.error("Initialization error:", error));
+    initialize();
+  }, [parsedTarget, connectedDevice, isTracking, hasSentAngles, convertToAltAz, sendAnglesDebounced]);
 
+  // Cleanup on unmount
+  useEffect(() => {
+    // Capture the current rateLimiter instance for cleanup
+    const rateLimiterInstance = rateLimiter.current;
     return () => {
       isMountedRef.current = false;
+      
+      // Clear all timeouts
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
+      if (connectionCheckTimeoutRef.current) {
+        clearTimeout(connectionCheckTimeoutRef.current);
+      }
+      
+      // Clear command queue
+      commandQueue.current = [];
+      rateLimiterInstance.reset();
+      
       console.log("TargetDetail unmounted, cleaned up resources");
     };
-  }, [parsedTarget.current, connectedDevice, convertToAltAz, sendAngles]);
+  }, []);
 
-  if (!parsedTarget.current) return null;
+  // Memoized recording toggle handler
+  const handleRecordingToggle = useCallback(() => {
+    setIsRecording(prev => {
+      const newState = !prev;
+      console.log(`Recording ${newState ? "started" : "paused"}`);
+      return newState;
+    });
+  }, []);
 
-  // --- JSX ---
+  // Memoized status display
+  const connectionStatusText = useMemo(() => {
+    return isConnected === null ? "Checking..." : isConnected ? "Connected" : "Disconnected";
+  }, [isConnected]);
+
+  const signalStatusText = useMemo(() => {
+    if (!isConnected || rssi === null) return "N/A";
+    if (rssi >= RSSI_EXCELLENT) return "Excellent";
+    if (rssi >= RSSI_GOOD) return "Good";
+    if (rssi >= RSSI_WEAK) return "Weak";
+    return "Poor";
+  }, [isConnected, rssi]);
+
+  const daisyChainStatusText = useMemo(() => {
+    return isConnected ? "Active" : "Inactive";
+  }, [isConnected]);
+
+  if (!parsedTarget) return null;
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ImageBackground
@@ -315,7 +508,7 @@ const TargetDetail: React.FC = () => {
             >
               <Feather name="arrow-left" size={28} color="white" />
             </TouchableOpacity>
-            <Text style={styles.headerTitle}>{parsedTarget.current.name}</Text>
+            <Text style={styles.headerTitle}>{parsedTarget.name}</Text>
           </View>
 
           {/* Status Indicators */}
@@ -326,24 +519,22 @@ const TargetDetail: React.FC = () => {
               </View>
               <Text style={styles.statusLabel}>STATUS</Text>
               <Text style={styles.statusValueGreen}>
-                {isConnected === null
-                  ? "Checking..."
-                  : isConnected
-                  ? "Connected"
-                  : "Disconnected"}
+                {connectionStatusText}
               </Text>
             </View>
             <View style={styles.statusItem}>
               <MaterialCommunityIcons name="wifi" size={24} color="white" />
               <Text style={styles.statusLabel}>SIGNAL</Text>
               <Text style={styles.statusValueGreen}>
-                {isConnected ? "Excellent" : "N/A"}
+                {signalStatusText}
               </Text>
             </View>
             <View style={styles.statusItem}>
-              <MaterialCommunityIcons name="battery" size={24} color="#34C759" />
-              <Text style={styles.statusLabel}>BATTERY</Text>
-              <Text style={styles.statusValueGreen}>100%</Text>
+              <MaterialCommunityIcons name="access-point-network" size={24} color="white" />
+              <Text style={styles.statusLabel}>DAISY CHAIN</Text>
+              <Text style={styles.statusValueGreen}>
+                {daisyChainStatusText}
+              </Text>
             </View>
           </View>
 
@@ -360,19 +551,19 @@ const TargetDetail: React.FC = () => {
           <View style={styles.detailsContainer}>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>RIGHT ASCENSION (RA):</Text>
-              <Text style={styles.detailValue}>{parsedTarget.current.ra}</Text>
+              <Text style={styles.detailValue}>{parsedTarget.ra}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>DECLINATION (DEC):</Text>
-              <Text style={styles.detailValue}>{parsedTarget.current.dec}</Text>
+              <Text style={styles.detailValue}>{parsedTarget.dec}</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>ALTITUDE (Alt):</Text>
-              <Text style={styles.detailValue}>{altitude.toFixed(1)}°</Text>
+              <Text style={styles.detailValue}>{currentAngles.altitude.toFixed(1)}°</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>AZIMUTH (Az):</Text>
-              <Text style={styles.detailValue}>{azimuth.toFixed(1)}°</Text>
+              <Text style={styles.detailValue}>{currentAngles.azimuth.toFixed(1)}°</Text>
             </View>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>FREQUENCY:</Text>
@@ -392,10 +583,7 @@ const TargetDetail: React.FC = () => {
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.recButton}
-              onPress={() => {
-                setIsRecording(!isRecording);
-                console.log(`Recording ${isRecording ? "paused" : "started"}`);
-              }}
+              onPress={handleRecordingToggle}
             >
               <MaterialCommunityIcons
                 name={isRecording ? "pause" : "record"}
@@ -411,7 +599,9 @@ const TargetDetail: React.FC = () => {
       </ImageBackground>
     </SafeAreaView>
   );
-};
+});
+
+TargetDetail.displayName = 'TargetDetail';
 
 const FONT_FAMILY_UI = "Shantell";
 
@@ -493,7 +683,7 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
   statusValueGreen: {
-    color: "#34C759",
+    color: 'green',
     fontSize: 12,
     fontWeight: "bold",
     fontFamily: FONT_FAMILY_UI,

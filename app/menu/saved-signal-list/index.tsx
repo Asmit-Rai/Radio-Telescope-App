@@ -1,9 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, SafeAreaView, Alert, TextInput, Modal, Platform, ImageBackground, Share } from 'react-native';
 import { router } from 'expo-router';
 import { AntDesign } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
 
 type SavedSignal = {
   name: string;
@@ -13,17 +12,8 @@ type SavedSignal = {
   audioBase64?: string;
 };
 
-
-const InfoRow = ({ label, value }: { label: string; value: string }) => (
-  <View style={styles.detailItem}>
-    <Text style={styles.detailLabel}>{label}</Text>
-    <Text style={styles.detailValue}>{value}</Text>
-  </View>
-);
-
 export default function SavedSignalsList() {
   const [signals, setSignals] = useState<SavedSignal[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [isSaveModalVisible, setIsSaveModalVisible] = useState(false);
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
   const [signalName, setSignalName] = useState('');
@@ -36,7 +26,6 @@ export default function SavedSignalsList() {
   useEffect(() => {
     const loadSavedSignals = async () => {
       try {
-        setIsLoading(true);
         const saved = await AsyncStorage.getItem('savedSignals');
         if (saved) {
           setSignals(JSON.parse(saved));
@@ -48,7 +37,6 @@ export default function SavedSignalsList() {
         Alert.alert('Error', 'Failed to load saved signals.');
         setSignals([]);
       } finally {
-        setIsLoading(false);
       }
     };
     loadSavedSignals();
@@ -155,48 +143,56 @@ export default function SavedSignalsList() {
     }
   };
 
+  const navigateToSignalDetail = useCallback((item: SavedSignal) => {
+    router.push({
+      pathname: "/menu/saved-signal-detail",
+      params: {
+        name: item.name,
+        frequency: item.frequency.toString(),
+        altitude: item.altitude.toString(),
+        azimuth: item.azimuth.toString(),
+      },
+    });
+  }, []);
+
+
   const renderSignalCard = ({ item, index }: { item: SavedSignal; index: number }) => (
     <View style={styles.cardContainer}>
-      <TouchableOpacity
-        onPress={() => router.push(`/menu/saved-signal-detail?name=${encodeURIComponent(item.name)}&frequency=${item.frequency}&altitude=${item.altitude}&azimuth=${item.azimuth}`)}
-        activeOpacity={0.9}
-      >
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>{item.name}</Text>
-            <Text style={styles.cardSubtitle}>Saved Signal</Text>
-          </View>
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardTitle}>{item.name}</Text>
+        <Text style={styles.cardSubtitle}>Saved Signal</Text>
+      </View>
 
-          <View style={styles.detailsContainer}>
-            <View style={styles.detailItem}>
-              <Text style={styles.detailLabel}>Frequency</Text>
-              <Text style={styles.detailValue}>{item.frequency} MHz</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <View style={styles.detailItem}>
-                <Text style={styles.detailLabel}>Azimuth / Altitude</Text>
-                <Text style={styles.detailValue}>{`${item.azimuth.toFixed(1)}° / ${item.altitude.toFixed(1)}°`}</Text>
-              </View>
-            </View>
+      <View style={styles.detailsContainer}>
+        <View style={styles.detailItem}>
+          <Text style={styles.detailLabel}>Frequency</Text>
+          <Text style={styles.detailValue}>{item.frequency} MHz</Text>
+        </View>
+        <View style={styles.detailRow}>
+          <View style={styles.detailItem}>
+            <Text style={styles.detailLabel}>Azimuth / Altitude</Text>
+            <Text style={styles.detailValue}>{`${item.azimuth.toFixed(1)}° / ${item.altitude.toFixed(1)}°`}</Text>
           </View>
+        </View>
+      </View>
 
-          <View style={styles.actionButtons}>
-            <TouchableOpacity style={styles.actionButton} onPress={() => handleEdit(index)}>
-              <AntDesign name="edit" size={20} color="white" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton} onPress={() => handleDelete(index)}>
-              <AntDesign name="delete" size={20} color="white" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton} onPress={() => handleShare(index)}>
-              <AntDesign name="sharealt" size={20} color="white" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.listenButton}
-              onPress={() => router.push(`/menu/saved-signal-detail?name=${encodeURIComponent(item.name)}&frequency=${item.frequency}&altitude=${item.altitude}&azimuth=${item.azimuth}`)}
-            >
-              <Text style={styles.listenButtonText}>Listen & Track</Text>
-            </TouchableOpacity>
-          </View>
-      </TouchableOpacity>
+      <View style={styles.actionButtons}>
+        <TouchableOpacity style={styles.actionButton} onPress={() => handleEdit(index)}>
+          <AntDesign name="edit" size={20} color="white" />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.actionButton} onPress={() => handleDelete(index)}>
+          <AntDesign name="delete" size={20} color="white" />
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.actionButton} onPress={() => handleShare(index)}>
+          <AntDesign name="sharealt" size={20} color="white" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.listenButton}
+          onPress={() => navigateToSignalDetail(item)}
+        >
+          <Text style={styles.listenButtonText}>Listen & Track</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -219,7 +215,7 @@ export default function SavedSignalsList() {
         <FlatList
           data={signals}
           renderItem={renderSignalCard}
-          keyExtractor={(item, index) => index.toString()}
+          keyExtractor={(item, index) => `${item.name}-${item.frequency}-${index}`}
           contentContainerStyle={styles.listContentContainer}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={<Text style={styles.emptyText}>No signals saved.</Text>}
@@ -384,7 +380,6 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 10,
   },
-  
   cardHeader: {
     marginBottom: 20,
   },
@@ -425,7 +420,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginTop: 0,
-
   },
   actionButton: {
     padding: 20,

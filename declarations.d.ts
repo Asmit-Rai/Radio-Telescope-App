@@ -7,3 +7,9 @@ declare module '*.mp3' {
   
   declare module '*.png';
   declare module '*.jpg';
+
+  declare module 'expo-font' {
+  export function useFonts(
+    map: { [fontName: string]: any }
+  ): [boolean, Error | null];
+}

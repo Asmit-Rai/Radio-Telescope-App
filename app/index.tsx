@@ -1,4 +1,4 @@
-import { useBLE } from 'context/BLEContext';
+import { useBLE } from '../context/BLEContext';
 import { useFonts } from 'expo-font';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -297,7 +297,7 @@ const SpaceConnectScreen = () => {
     if (connectedDevice && !isConnectingToDevice && isMountedRef.current) {
       console.log('Device already connected, redirecting...');
       // TODO: Implement navigation (e.g., router.push('/home'))
-      router.push('/dashboard');
+      router.push('/connected');
     }
   }, [connectedDevice, isConnectingToDevice]);
 
