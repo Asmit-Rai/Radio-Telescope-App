@@ -612,6 +612,21 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await device.discoverAllServicesAndCharacteristics();
       await device.requestMTU(BLE_CONFIG.MTU_SIZE);
 
+      // Log discovered services and characteristics
+      try {
+        const services = await device.services();
+        logger.current.info(`Discovered ${services.length} services:`);
+        for (const service of services) {
+          logger.current.info(`  Service: ${service.uuid}`);
+          const characteristics = await service.characteristics();
+          for (const char of characteristics) {
+            logger.current.info(`    Characteristic: ${char.uuid} (isWritable: ${char.isWritableWithoutResponse || char.isWritableWithResponse})`);
+          }
+        }
+      } catch (discError) {
+        logger.current.error('Failed to log services/characteristics:', discError);
+      }
+
       if (!isMountedRef.current) {
         await device.cancelConnection();
         return;
@@ -760,25 +775,22 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         throw new Error("Device disconnected");
       }
 
-      // Execute command with circuit breaker
-      await circuitBreaker.current.execute(async () => {
-        const jsonData = JSON.stringify({ a1: angle1, a2: angle2 });
-        const encodedData = base64.encode(jsonData);
-        
-        logger.current.debug(`Sending command: ${jsonData}`);
-        
-        await connectedDevice.writeCharacteristicWithoutResponseForService(
-          BLE_CONFIG.SERVICE_UUID,
-          BLE_CONFIG.CHARACTERISTIC_UUID,
-          encodedData
-        );
-      });
+      // Execute command with the exact format your Arduino expects
+      const jsonData = JSON.stringify({ a1: angle1, a2: angle2 });
+      const encodedData = base64.encode(jsonData);
+      logger.current.info(`📤 Sending data: ${jsonData}`);
 
+      await connectedDevice.writeCharacteristicWithoutResponseForService(
+        BLE_CONFIG.SERVICE_UUID,
+        BLE_CONFIG.CHARACTERISTIC_UUID,
+        encodedData
+      );
+
+      logger.current.info(`✅ Command sent successfully to device`);
       resolve(true);
-      logger.current.debug(`Command executed successfully: a1=${angle1}, a2=${angle2}`);
       
     } catch (error) {
-      logger.current.error('Command execution failed:', error);
+      logger.current.error('❌ Command execution failed:', error);
       reject(error as Error);
       
       // Trigger reconnection on write failure
@@ -801,7 +813,9 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       commandQueue.current.setProcessing(false);
       
       // Process next command after delay
-      setTimeout(() => processNextCommand(), 50);
+      if (commandQueue.current.size() > 0) {
+        setTimeout(() => processNextCommand(), 50);
+      }
     }
   }, [connectedDevice, checkConnection, getData, cleanupConnection, attemptReconnection]);
 
@@ -818,24 +832,44 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    try {
-      const result = await commandQueue.current.enqueue({
-        angle1,
-        angle2,
-        resolve: () => {},
-        reject: () => {},
-        timestamp: Date.now()
-      });
-      
-      // Trigger processing
-      processNextCommand();
-      
-      return result;
-    } catch (error) {
-      logger.current.error('Failed to queue command:', error);
+    if (!connectedDevice) {
+      logger.current.error('No device connected when trying to write data');
       return false;
     }
-  }, [processNextCommand]);
+
+    try {
+      const jsonData = JSON.stringify({ a1: angle1, a2: angle2 });
+      const encodedData = base64.encode(jsonData);
+      logger.current.info(`📤 Sending data: ${jsonData}`);
+
+      // Use the specific UUIDs that match the Arduino code
+      await connectedDevice.writeCharacteristicWithoutResponseForService(
+        BLE_CONFIG.SERVICE_UUID,
+        BLE_CONFIG.CHARACTERISTIC_UUID,
+        encodedData
+      );
+      
+      logger.current.info(`✅ Command sent successfully to device`);
+      return true;
+    } catch (error) {
+      logger.current.error('❌ Command execution failed:', error);
+      
+      // Log the actual service and characteristic info for debugging
+      try {
+        const services = await connectedDevice.services();
+        logger.current.info(`Available services: ${services.map(s => s.uuid).join(', ')}`);
+        
+        for (const service of services) {
+          const characteristics = await service.characteristics();
+          logger.current.info(`Service ${service.uuid} characteristics: ${characteristics.map(c => c.uuid).join(', ')}`);
+        }
+      } catch (discError) {
+        logger.current.error('Failed to discover services/characteristics:', discError);
+      }
+      
+      return false;
+    }
+  }, [connectedDevice]);
 
   // === SCANNING ===
   const scanForPeripherals = useCallback(async (): Promise<void> => {
@@ -989,6 +1023,21 @@ export const BLEProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       await deviceConnection.discoverAllServicesAndCharacteristics();
       await deviceConnection.requestMTU(BLE_CONFIG.MTU_SIZE);
+
+      // Log discovered services and characteristics
+      try {
+        const services = await deviceConnection.services();
+        logger.current.info(`Discovered ${services.length} services:`);
+        for (const service of services) {
+          logger.current.info(`  Service: ${service.uuid}`);
+          const characteristics = await service.characteristics();
+          for (const char of characteristics) {
+            logger.current.info(`    Characteristic: ${char.uuid} (isWritable: ${char.isWritableWithoutResponse || char.isWritableWithResponse})`);
+          }
+        }
+      } catch (discError) {
+        logger.current.error('Failed to log services/characteristics:', discError);
+      }
 
       if (!isMountedRef.current) {
         await deviceConnection.cancelConnection();

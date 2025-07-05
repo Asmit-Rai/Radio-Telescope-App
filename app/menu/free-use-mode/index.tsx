@@ -10,6 +10,7 @@ import {
   PanResponder,
   TextInput,
   Modal,
+  ScrollView,
 } from "react-native";
 import {
   Ionicons,
@@ -24,6 +25,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { debounce } from "lodash";
 import RTLSDRComponent from "../../../components/RTLSDRComponent";
+import STRComponent from "../../../components/STRComponent";
 
 // === CONSTANTS ===
 const SCREEN_CONFIG = {
@@ -83,8 +85,6 @@ const MONITORING_CONFIG = {
 // === TYPES ===
 interface WaveformProps {
   data: readonly number[];
-  cursorPosition: CursorPosition;
-  onCursorMove: (position: CursorPosition) => void;
 }
 
 interface SavedSignal {
@@ -97,10 +97,6 @@ interface SavedSignal {
   readonly timestamp: number;
 }
 
-interface CursorPosition {
-  readonly x: number;
-  readonly y: number;
-}
 
 interface ControlState {
   readonly altitude: number;
@@ -112,7 +108,6 @@ interface ConnectionStatus {
   readonly isConnected: boolean | null;
   readonly signalStrength: number | null;
   readonly deviceName: string;
-  readonly battery: number;
 }
 
 interface AudioState {
@@ -294,11 +289,10 @@ class CalculationUtil {
 // === CUSTOM HOOKS ===
 const useConnectionStatus = () => {
   const { connectedDevice, checkConnection, getRSSI } = useBLE();
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
+  const [connectionStatus, setConnectionStatus] = useState<Omit<ConnectionStatus, 'battery'>>({
     isConnected: null,
     signalStrength: null,
     deviceName: "",
-    battery: 100,
   });
 
   const isMountedRef = useRef(true);
@@ -365,17 +359,6 @@ const useConnectionStatus = () => {
 
     loadDeviceName();
   }, []);
-
-  useEffect(() => {
-    const batteryInterval = setInterval(() => {
-      if (isMountedRef.current) {
-        const batteryLevel = connectedDevice ? Math.floor(Math.random() * 20 + 80) : 100;
-        setConnectionStatus(prev => ({ ...prev, battery: batteryLevel }));
-      }
-    }, MONITORING_CONFIG.BATTERY_UPDATE_INTERVAL);
-
-    return () => clearInterval(batteryInterval);
-  }, [connectedDevice]);
 
   useEffect(() => {
     return () => {
@@ -844,31 +827,15 @@ const useSavedSignals = () => {
 };
 
 // === COMPONENTS ===
-const Waveform: React.FC<WaveformProps> = React.memo(({ data, cursorPosition, onCursorMove }) => {
-  const cursorPanResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: () => true,
-    onPanResponderGrant: () => {},
-    onPanResponderMove: (evt, gestureState) => {
-      const newX = Math.max(10, Math.min(SCREEN_CONFIG.WIDTH - 10, cursorPosition.x + gestureState.dx));
-      onCursorMove({ x: newX, y: cursorPosition.y });
-    },
-    onPanResponderRelease: () => {},
-  }), [cursorPosition.x, cursorPosition.y, onCursorMove]);
-
+const Waveform: React.FC<WaveformProps> = React.memo(({ data }) => {
   return (
-    <View style={styles.waveformContainer} {...cursorPanResponder.panHandlers}>
+    <View style={styles.waveformContainer}>
       {Array.from(data).map((amp, i) => (
         <View
           key={i}
           style={[styles.waveBar, { height: Math.max(2, 2 + amp * 96) }]}
         />
       ))}
-      <View
-        style={[
-          styles.cursor,
-          { left: cursorPosition.x - 1.5, top: cursorPosition.y - 75 },
-        ]}
-      />
     </View>
   );
 });
@@ -885,10 +852,7 @@ const FreeUseMode: React.FC = () => {
   const { modalState, showSaveModal, hideSaveModal, showFindModal, hideFindModal, setSignalName, setFindAltitude, setFindAzimuth } = useModalState();
   const { saveSignal } = useSavedSignals();
 
-  const [cursorPosition, setCursorPosition] = useState<CursorPosition>({
-    x: SCREEN_CONFIG.WIDTH / 2,
-    y: 75,
-  });
+  const [isStrVisible, setIsStrVisible] = useState(false);
 
   const waveformScrollRef = useRef<number>(0);
   const isMountedRef = useRef(true);
@@ -907,6 +871,10 @@ const FreeUseMode: React.FC = () => {
       waveformScrollRef.current = 0;
     },
   }), [adjustFrequency]);
+
+  const toggleStrVisibility = useCallback(() => {
+    setIsStrVisible(prev => !prev);
+  }, []);
 
   // === EVENT HANDLERS ===
   const handleSaveSignal = useCallback(async () => {
@@ -1030,252 +998,260 @@ const FreeUseMode: React.FC = () => {
               {getSignalQuality}
             </Text>
           </View>
-          <View style={styles.statusItem}>
-            <MaterialIcons name="battery-full" size={24} color={UI_CONFIG.SUCCESS_COLOR} />
-            <Text style={styles.statusLabel}>BATTERY</Text>
-            <Text style={styles.statusValue}>{connectionStatus.battery}%</Text>
+        </View>
+
+        <ScrollView contentContainerStyle={styles.scrollContainer}>
+          {/* Coordinates */}
+          <View style={styles.coordsContainer}>
+            <Text style={styles.coordsText}>
+              ALTITUDE: {controlState.altitude.toFixed(1)}°
+            </Text>
+            <Text style={styles.coordsText}>
+              AZIMUTH: {controlState.azimuth.toFixed(1)}°
+            </Text>
           </View>
-        </View>
 
-        {/* Coordinates */}
-        <View style={styles.coordsContainer}>
-          <Text style={styles.coordsText}>
-            ALTITUDE: {controlState.altitude.toFixed(1)}°
-          </Text>
-          <Text style={styles.coordsText}>
-            AZIMUTH: {controlState.azimuth.toFixed(1)}°
-          </Text>
-        </View>
-
-        {/* Waveform Area */}
-        <View style={styles.waveformArea} {...frequencyPanResponder.panHandlers}>
-          <Text style={styles.frequencyText}>
-            FREQUENCY: {controlState.frequency.toFixed(FREQUENCY_CONFIG.PRECISION)} MHz
-          </Text>
-          <View style={{ width: SCREEN_CONFIG.WIDTH }}>
-            <Waveform 
-              data={audioState.waveformData} 
-              cursorPosition={cursorPosition}
-              onCursorMove={setCursorPosition}
-            />
-          </View>
-          <View style={styles.playhead} />
-          <Text style={styles.swipeHint}>
-            ← Swipe left/right to adjust frequency →
-          </Text>
-        </View>
-
-        {/* RTL-SDR Component */}
-        <RTLSDRComponent 
-          frequency={controlState.frequency} 
-          onDataReceived={handleDataReceived} 
-        />
-
-        {/* Frequency Controls */}
-        <View style={styles.freqControls}>
-          <TouchableOpacity
-            style={styles.freqButton}
-            onPress={() => adjustFrequency(-FREQUENCY_CONFIG.COARSE_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustFrequency(delta), -FREQUENCY_CONFIG.COARSE_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Decrease frequency by 1 MHz"
-          >
-            <Text style={styles.freqButtonText}>--</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.freqButton}
-            onPress={() => adjustFrequency(-FREQUENCY_CONFIG.FINE_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustFrequency(delta), -FREQUENCY_CONFIG.FINE_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Decrease frequency by 0.01 MHz"
-          >
-            <Text style={styles.freqButtonText}>-</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.freqButton}
-            onPress={() => adjustFrequency(FREQUENCY_CONFIG.FINE_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustFrequency(delta), FREQUENCY_CONFIG.FINE_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Increase frequency by 0.01 MHz"
-          >
-            <Text style={styles.freqButtonText}>+</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.freqButton}
-            onPress={() => adjustFrequency(FREQUENCY_CONFIG.COARSE_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustFrequency(delta), FREQUENCY_CONFIG.COARSE_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Increase frequency by 1 MHz"
-          >
-            <Text style={styles.freqButtonText}>++</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* D-Pad Controls */}
-        <View style={styles.dpadContainer}>
-          <View style={[styles.dpadArm, styles.dpadHorizontalOutline]} />
-          <View style={[styles.dpadArm, styles.dpadVerticalOutline]} />
-          <View style={[styles.dpadArm, styles.dpadHorizontal]} />
-          <View style={[styles.dpadArm, styles.dpadVertical]} />
-          
-          <TouchableOpacity
-            style={[styles.dpadButton, styles.dpadButtonUp]}
-            onPress={() => adjustAltitude(CONTROL_CONFIG.ALTITUDE_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustAltitude(delta), CONTROL_CONFIG.ALTITUDE_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Increase altitude"
-          >
-            <FontAwesome5 name="chevron-up" size={24} color="white" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.dpadButton, styles.dpadButtonDown]}
-            onPress={() => adjustAltitude(-CONTROL_CONFIG.ALTITUDE_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustAltitude(delta), -CONTROL_CONFIG.ALTITUDE_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Decrease altitude"
-          >
-            <FontAwesome5 name="chevron-down" size={24} color="white" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.dpadButton, styles.dpadButtonLeft]}
-            onPress={() => adjustAzimuth(-CONTROL_CONFIG.AZIMUTH_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustAzimuth(delta), -CONTROL_CONFIG.AZIMUTH_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Decrease azimuth"
-          >
-            <FontAwesome5 name="undo" size={20} color="white" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.dpadButton, styles.dpadButtonRight]}
-            onPress={() => adjustAzimuth(CONTROL_CONFIG.AZIMUTH_STEP)}
-            onLongPress={() => startLongPress((delta) => adjustAzimuth(delta), CONTROL_CONFIG.AZIMUTH_STEP)}
-            onPressOut={stopLongPress}
-            accessibilityLabel="Increase azimuth"
-          >
-            <FontAwesome5 name="redo" size={20} color="white" />
-          </TouchableOpacity>
-          
-          <TouchableOpacity style={styles.centerButton} accessibilityLabel="Center button">
-            <View style={styles.centerButtonGlow}>
-              <View style={styles.centerButtonCore} />
-            </View>
-          </TouchableOpacity>
-        </View>
-
-        {/* Bottom Controls */}
-        <View style={styles.bottomBar}>
-          <TouchableOpacity
-            style={styles.bottomButtonCircle}
-            onPress={showSaveModal}
-            accessibilityLabel="Save signal"
-          >
-            <Text style={styles.bottomButtonText}>SAVE SIGNAL</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.bottomButtonCirclePurple}
-            onPress={showFindModal}
-            accessibilityLabel="Find signal"
-          >
-            <Text style={styles.bottomButtonText}>FIND SIGNAL</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.bottomButtonCircleRed}
-            onPress={handleReset}
-            accessibilityLabel="Reset system"
-          >
-            <Text style={styles.bottomButtonText}>RESET</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            onPress={handleStop}
-            accessibilityLabel="Stop audio"
-          >
-            <MaterialIcons name="stop-circle" size={50} color="#FF6B6B" />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.recPauseButton}
-            onPress={handlePlayPause}
-            accessibilityLabel={audioState.isPlaying ? "Pause audio" : "Play audio"}
-          >
-            <Ionicons
-              name={audioState.isPlaying ? "pause" : "play"}
-              size={24}
-              color="white"
-            />
-          </TouchableOpacity>
-        </View>
-
-        {/* Save Signal Modal */}
-        <Modal visible={modalState.isSaveModalVisible} transparent animationType="slide">
-          <View style={styles.modalContainer}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Save Signal</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Signal Name (max 50 characters)"
-                placeholderTextColor="#666"
-                value={modalState.signalName}
-                onChangeText={setSignalName}
-                maxLength={50}
-                returnKeyType="done"
+          {/* Waveform Area */}
+          <View style={styles.waveformArea} {...frequencyPanResponder.panHandlers}>
+            <Text style={styles.frequencyText}>
+              FREQUENCY: {controlState.frequency.toFixed(FREQUENCY_CONFIG.PRECISION)} MHz
+            </Text>
+            <View style={{ width: SCREEN_CONFIG.WIDTH }}>
+              <Waveform 
+                data={audioState.waveformData} 
               />
-              <View style={styles.modalButtonContainer}>
-                <TouchableOpacity
-                  style={styles.modalButton}
-                  onPress={hideSaveModal}
-                >
-                  <Text style={styles.modalButtonText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.modalButton}
-                  onPress={handleSaveSignal}
-                >
-                  <Text style={styles.modalButtonText}>Save</Text>
-                </TouchableOpacity>
+            </View>
+            <View style={styles.playhead} />
+            <Text style={styles.swipeHint}>
+              ← Swipe left/right to adjust frequency →
+            </Text>
+          </View>
+
+          <View style={styles.controlsContainer}>
+            <TouchableOpacity style={styles.visualizerButton} onPress={toggleStrVisibility}>
+              <Text style={styles.visualizerButtonText}>
+                {isStrVisible ? "Hide Spectrum" : "Show Spectrum"}
+              </Text>
+              <FontAwesome5 name={isStrVisible ? "chevron-up" : "chevron-down"} size={16} color="white" />
+            </TouchableOpacity>
+
+            {/* STR Component - Replaces RTL-SDR Component */}
+            {isStrVisible && (
+              <STRComponent 
+                initialFrequency={controlState.frequency}
+                onDataReceived={handleDataReceived}
+                contextualStyling={true}
+                showControls={false}
+              />
+            )}
+
+            {/* Frequency Controls */}
+            <View style={styles.freqControls}>
+              <TouchableOpacity
+                style={styles.freqButton}
+                onPress={() => adjustFrequency(-FREQUENCY_CONFIG.COARSE_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustFrequency(delta), -FREQUENCY_CONFIG.COARSE_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Decrease frequency by 1 MHz"
+              >
+                <Text style={styles.freqButtonText}>--</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.freqButton}
+                onPress={() => adjustFrequency(-FREQUENCY_CONFIG.FINE_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustFrequency(delta), -FREQUENCY_CONFIG.FINE_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Decrease frequency by 0.01 MHz"
+              >
+                <Text style={styles.freqButtonText}>-</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.freqButton}
+                onPress={() => adjustFrequency(FREQUENCY_CONFIG.FINE_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustFrequency(delta), FREQUENCY_CONFIG.FINE_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Increase frequency by 0.01 MHz"
+              >
+                <Text style={styles.freqButtonText}>+</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.freqButton}
+                onPress={() => adjustFrequency(FREQUENCY_CONFIG.COARSE_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustFrequency(delta), FREQUENCY_CONFIG.COARSE_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Increase frequency by 1 MHz"
+              >
+                <Text style={styles.freqButtonText}>++</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* D-Pad Controls */}
+            <View style={styles.dpadContainer}>
+              <View style={[styles.dpadArm, styles.dpadHorizontalOutline]} />
+              <View style={[styles.dpadArm, styles.dpadVerticalOutline]} />
+              <View style={[styles.dpadArm, styles.dpadHorizontal]} />
+              <View style={[styles.dpadArm, styles.dpadVertical]} />
+              
+              <TouchableOpacity
+                style={[styles.dpadButton, styles.dpadButtonUp]}
+                onPress={() => adjustAltitude(CONTROL_CONFIG.ALTITUDE_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustAltitude(delta), CONTROL_CONFIG.ALTITUDE_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Increase altitude"
+              >
+                <FontAwesome5 name="chevron-up" size={24} color="white" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dpadButton, styles.dpadButtonDown]}
+                onPress={() => adjustAltitude(-CONTROL_CONFIG.ALTITUDE_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustAltitude(delta), -CONTROL_CONFIG.ALTITUDE_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Decrease altitude"
+              >
+                <FontAwesome5 name="chevron-down" size={24} color="white" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dpadButton, styles.dpadButtonLeft]}
+                onPress={() => adjustAzimuth(-CONTROL_CONFIG.AZIMUTH_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustAzimuth(delta), -CONTROL_CONFIG.AZIMUTH_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Decrease azimuth"
+              >
+                <FontAwesome5 name="undo" size={20} color="white" />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.dpadButton, styles.dpadButtonRight]}
+                onPress={() => adjustAzimuth(CONTROL_CONFIG.AZIMUTH_STEP)}
+                onLongPress={() => startLongPress((delta) => adjustAzimuth(delta), CONTROL_CONFIG.AZIMUTH_STEP)}
+                onPressOut={stopLongPress}
+                accessibilityLabel="Increase azimuth"
+              >
+                <FontAwesome5 name="redo" size={20} color="white" />
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.centerButton} accessibilityLabel="Center button">
+                <View style={styles.centerButtonGlow}>
+                  <View style={styles.centerButtonCore} />
+                </View>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Bottom Controls */}
+          <View style={styles.bottomBar}>
+            <TouchableOpacity
+              style={styles.bottomButtonCircle}
+              onPress={showSaveModal}
+              accessibilityLabel="Save signal"
+            >
+              <Text style={styles.bottomButtonText}>SAVE SIGNAL</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.bottomButtonCirclePurple}
+              onPress={showFindModal}
+              accessibilityLabel="Find signal"
+            >
+              <Text style={styles.bottomButtonText}>FIND SIGNAL</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.bottomButtonCircleRed}
+              onPress={handleReset}
+              accessibilityLabel="Reset system"
+            >
+              <Text style={styles.bottomButtonText}>RESET</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              onPress={handleStop}
+              accessibilityLabel="Stop audio"
+            >
+              <MaterialIcons name="stop-circle" size={50} color="#FF6B6B" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.recPauseButton}
+              onPress={handlePlayPause}
+              accessibilityLabel={audioState.isPlaying ? "Pause audio" : "Play audio"}
+            >
+              <Ionicons
+                name={audioState.isPlaying ? "pause" : "play"}
+                size={24}
+                color="white"
+              />
+            </TouchableOpacity>
+          </View>
+
+          {/* Save Signal Modal */}
+          <Modal visible={modalState.isSaveModalVisible} transparent animationType="slide">
+            <View style={styles.modalContainer}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Save Signal</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Signal Name (max 50 characters)"
+                  placeholderTextColor="#666"
+                  value={modalState.signalName}
+                  onChangeText={setSignalName}
+                  maxLength={50}
+                  returnKeyType="done"
+                />
+                <View style={styles.modalButtonContainer}>
+                  <TouchableOpacity
+                    style={styles.modalButton}
+                    onPress={hideSaveModal}
+                  >
+                    <Text style={styles.modalButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.modalButton}
+                    onPress={handleSaveSignal}
+                  >
+                    <Text style={styles.modalButtonText}>Save</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
-          </View>
-        </Modal>
+          </Modal>
 
-        {/* Find Signal Modal */}
-        <Modal visible={modalState.isFindModalVisible} transparent animationType="slide">
-          <View style={styles.modalContainer}>
-            <View style={styles.modalContent}>
-              <Text style={styles.modalTitle}>Find Signal</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Altitude (0-180°)"
-                placeholderTextColor="#666"
-                value={modalState.findAltitude}
-                onChangeText={setFindAltitude}
-                keyboardType="numeric"
-                returnKeyType="next"
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="Azimuth (0-360°)"
-                placeholderTextColor="#666"
-                value={modalState.findAzimuth}
-                onChangeText={setFindAzimuth}
-                keyboardType="numeric"
-                returnKeyType="done"
-              />
-              <View style={styles.modalButtonContainer}>
-                <TouchableOpacity
-                  style={styles.modalButton}
-                  onPress={hideFindModal}
-                >
-                  <Text style={styles.modalButtonText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.modalButton}
-                  onPress={handleFindSignal}
-                >
-                  <Text style={styles.modalButtonText}>Find</Text>
-                </TouchableOpacity>
+          {/* Find Signal Modal */}
+          <Modal visible={modalState.isFindModalVisible} transparent animationType="slide">
+            <View style={styles.modalContainer}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Find Signal</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Altitude (0-180°)"
+                  placeholderTextColor="#666"
+                  value={modalState.findAltitude}
+                  onChangeText={setFindAltitude}
+                  keyboardType="numeric"
+                  returnKeyType="next"
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Azimuth (0-360°)"
+                  placeholderTextColor="#666"
+                  value={modalState.findAzimuth}
+                  onChangeText={setFindAzimuth}
+                  keyboardType="numeric"
+                  returnKeyType="done"
+                />
+                <View style={styles.modalButtonContainer}>
+                  <TouchableOpacity
+                    style={styles.modalButton}
+                    onPress={hideFindModal}
+                  >
+                    <Text style={styles.modalButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.modalButton}
+                    onPress={handleFindSignal}
+                  >
+                    <Text style={styles.modalButtonText}>Find</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
-          </View>
-        </Modal>
+          </Modal>
+        </ScrollView>
       </SafeAreaView>
     </GestureHandlerRootView>
   );
@@ -1285,7 +1261,11 @@ const styles = StyleSheet.create({
   container: { 
     flex: 1, 
     backgroundColor: "#121212", 
-    alignItems: "center" 
+  },
+  scrollContainer: {
+    alignItems: 'center',
+    paddingHorizontal: 15,
+    paddingBottom: 20,
   },
   header: {
     flexDirection: "row",
@@ -1321,7 +1301,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-around",
     width: "100%",
-    marginTop: 20,
+    marginTop: 10,
     paddingHorizontal: 10,
   },
   statusItem: { 
@@ -1355,7 +1335,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     width: "90%",
-    marginTop: 15,
+    marginTop: 10,
   },
   coordsText: { 
     color: UI_CONFIG.ACCENT_COLOR, 
@@ -1392,14 +1372,6 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     top: 30,
   },
-  cursor: {
-    position: "absolute",
-    height: 100,
-    width: 3,
-    backgroundColor: UI_CONFIG.SUCCESS_COLOR,
-    borderRadius: 2,
-    zIndex: 10,
-  },
   frequencyText: {
     color: UI_CONFIG.ACCENT_COLOR,
     fontSize: 16,
@@ -1411,6 +1383,28 @@ const styles = StyleSheet.create({
     fontSize: 12, 
     marginTop: 5, 
     fontStyle: "italic" 
+  },
+  controlsContainer: {
+    width: '100%',
+    alignItems: 'center',
+    paddingHorizontal: 15,
+  },
+  visualizerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2C2C2E',
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+    marginTop: 10,
+    width: '80%',
+  },
+  visualizerButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+    marginRight: 10,
   },
   freqControls: {
     flexDirection: "row",
@@ -1435,11 +1429,11 @@ const styles = StyleSheet.create({
   bottomBar: {
     flexDirection: "row",
     flexWrap: "wrap",
-    justifyContent: "space-around",
+    justifyContent: "center",
     alignItems: "center",
     width: "100%",
-    paddingHorizontal: 15,
     marginTop: 15,
+    gap: 10,
   },
   bottomButtonCircle: {
     width: 60,
@@ -1449,7 +1443,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 5,
-    margin: 5,
   },
   bottomButtonCirclePurple: {
     width: 60,
@@ -1459,7 +1452,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 5,
-    margin: 5,
   },
   bottomButtonCircleRed: {
     width: 60,
@@ -1469,7 +1461,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 5,
-    margin: 5,
   },
   bottomButtonText: {
     color: "white",
@@ -1484,7 +1475,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     justifyContent: "center",
     alignItems: "center",
-    margin: 5,
   },
   modalContainer: {
     flex: 1,
@@ -1543,7 +1533,7 @@ const styles = StyleSheet.create({
     position: "relative",
     justifyContent: "center",
     alignItems: "center",
-    marginVertical: 20,
+    marginVertical: 10,
   },
   dpadArm: {
     position: "absolute",

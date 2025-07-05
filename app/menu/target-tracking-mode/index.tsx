@@ -529,13 +529,6 @@ const TargetDetail: React.FC = memo(() => {
                 {signalStatusText}
               </Text>
             </View>
-            <View style={styles.statusItem}>
-              <MaterialCommunityIcons name="access-point-network" size={24} color="white" />
-              <Text style={styles.statusLabel}>DAISY CHAIN</Text>
-              <Text style={styles.statusValueGreen}>
-                {daisyChainStatusText}
-              </Text>
-            </View>
           </View>
 
           {/* Visualizer */}

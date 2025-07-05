@@ -338,11 +338,6 @@ const SavedSignalDetail: React.FC = memo(() => {
               <Text style={styles.statusLabel}>SIGNAL</Text>
               <Text style={styles.statusValueGreen}>{signalStatusText} {rssi !== null ? `(${rssi} dBm)` : ''}</Text>
             </View>
-            <View style={styles.statusItem}>
-              <MaterialCommunityIcons name="access-point-network" size={24} color="white" />
-              <Text style={styles.statusLabel}>DAISY CHAIN</Text>
-              <Text style={styles.statusValueGreen}>{daisyChainStatusText}</Text>
-            </View>
           </View>
 
           <View style={styles.planetContainer}>

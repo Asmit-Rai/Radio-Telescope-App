@@ -115,7 +115,6 @@ export default function Dashboard() {
               signalStrength !== null ? `${signalStrength} dBm` : "Unknown"
             }
           />
-          <Status label="BATTERY" value="100%" />
         </View>
       </View>
 
