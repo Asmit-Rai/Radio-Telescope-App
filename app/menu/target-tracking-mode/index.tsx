@@ -19,12 +19,44 @@ import { MaterialCommunityIcons, Feather } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useBLE } from "../../../context/BLEContext";
 import * as Astronomy from "astronomy-engine";
-import RTLSDRComponent from "../../../components/RTLSDRComponent";
+import STRComponent from "../../../components/STRComponent";
 
 // Rate limiting constants
 const MAX_COMMANDS_PER_SECOND = 10;
 const COMMAND_DEBOUNCE_DELAY = 300;
 const CONNECTION_CHECK_INTERVAL = 30000;
+
+// Rate limiter class
+class CommandRateLimiter {
+  private commandTimestamps: number[] = [];
+  private readonly maxCommands: number;
+  private readonly timeWindow: number;
+
+  constructor(maxCommands: number = MAX_COMMANDS_PER_SECOND, timeWindow: number = 1000) {
+    this.maxCommands = maxCommands;
+    this.timeWindow = timeWindow;
+  }
+
+  canExecuteCommand(): boolean {
+    const now = Date.now();
+    // Remove timestamps older than the time window
+    this.commandTimestamps = this.commandTimestamps.filter(
+      timestamp => now - timestamp < this.timeWindow
+    );
+    
+    // Check if we can execute another command
+    if (this.commandTimestamps.length < this.maxCommands) {
+      this.commandTimestamps.push(now);
+      return true;
+    }
+    
+    return false;
+  }
+
+  reset(): void {
+    this.commandTimestamps = [];
+  }
+}
 
 // RSSI thresholds for signal strength
 const RSSI_EXCELLENT = -65;
@@ -38,6 +70,7 @@ interface Target {
   frequency: string;
   ra: string;
   dec: string;
+  type?: string;
 }
 
 interface AudioVisualizerProps {
@@ -71,33 +104,6 @@ const AudioVisualizer: React.FC<AudioVisualizerProps> = memo(({ data }) => {
 
 AudioVisualizer.displayName = 'AudioVisualizer';
 
-// --- Rate Limiter Class ---
-class CommandRateLimiter {
-  private commandTimes: number[] = [];
-  private readonly maxCommandsPerSecond: number;
-
-  constructor(maxCommandsPerSecond: number = MAX_COMMANDS_PER_SECOND) {
-    this.maxCommandsPerSecond = maxCommandsPerSecond;
-  }
-
-  canExecuteCommand(): boolean {
-    const now = Date.now();
-    // Remove commands older than 1 second
-    this.commandTimes = this.commandTimes.filter(time => now - time < 1000);
-    
-    if (this.commandTimes.length >= this.maxCommandsPerSecond) {
-      return false;
-    }
-    
-    this.commandTimes.push(now);
-    return true;
-  }
-
-  reset(): void {
-    this.commandTimes = [];
-  }
-}
-
 // --- Main Component ---
 const TargetDetail: React.FC = memo(() => {
   const { target } = useLocalSearchParams<{ target: string }>();
@@ -110,9 +116,12 @@ const TargetDetail: React.FC = memo(() => {
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
   const [currentAngles, setCurrentAngles] = useState({ azimuth: 0, altitude: 0 });
   const [frequency, setFrequency] = useState<number>(0);
-  const [waveformData, setWaveformData] = useState<number[]>(() => new Array(14).fill(0));
+  const [waveformData, setWaveformData] = useState<number[]>([]);
   const [rssi, setRssi] = useState<number | null>(null);
-  
+  const [sdrError, setSdrError] = useState<string | null>(null);
+  const [isSDRConnected, setIsSDRConnected] = useState<boolean>(false);
+  const [sdrConnectionChecked, setSdrConnectionChecked] = useState<boolean>(false);
+
   // Refs for values that don't need to trigger re-renders
   const isMountedRef = useRef<boolean>(true);
   const lastAnglesRef = useRef<{ alt: number; az: number } | null>(null);
@@ -121,6 +130,7 @@ const TargetDetail: React.FC = memo(() => {
   const rateLimiter = useRef<CommandRateLimiter>(new CommandRateLimiter());
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const connectionCheckTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const processQueueTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Parse target once with memoization
   const parsedTarget = useMemo<Target | null>(() => {
@@ -131,6 +141,33 @@ const TargetDetail: React.FC = memo(() => {
       return null;
     }
   }, [target]);
+
+  // Extract frequency and determine target type from parsed target
+  const targetFrequency = useMemo(() => {
+    if (!parsedTarget) return 20.1; // Default frequency
+    
+    // Extract numeric frequency from frequency string
+    const freqMatch = parsedTarget.frequency.match(/(\d+(?:\.\d+)?)/);
+    return freqMatch ? parseFloat(freqMatch[1]) : 20.1;
+  }, [parsedTarget]);
+
+  const targetPlanet = useMemo(() => {
+    if (!parsedTarget) return 'jupiter';
+    
+    const targetType = parsedTarget.type?.toLowerCase() || '';
+    const targetName = parsedTarget.name?.toLowerCase() || '';
+    
+    // Determine planet/target type based on target data
+    if (targetName.includes('jupiter') || targetType.includes('jupiter')) {
+      return 'jupiter';
+    } else if (targetName.includes('sun') || targetType.includes('solar')) {
+      return 'sun';
+    } else if (targetName.includes('saturn') || targetType.includes('saturn')) {
+      return 'saturn';
+    } else {
+      return 'galactic'; // Default for other astronomical objects
+    }
+  }, [parsedTarget]);
 
   // Alert for invalid target (separate effect to prevent blocking)
   useEffect(() => {
@@ -229,7 +266,7 @@ const TargetDetail: React.FC = memo(() => {
     }
   }, [getUserLocation]);
 
-  // Process command queue with rate limiting
+  // Process command queue with rate limiting - Fixed timeout management
   const processCommandQueue = useCallback(async () => {
     if (
       isProcessingCommand.current || 
@@ -238,7 +275,10 @@ const TargetDetail: React.FC = memo(() => {
     ) {
       // If rate limited, try again after a short delay
       if (commandQueue.current.length > 0 && !isProcessingCommand.current) {
-        setTimeout(processCommandQueue, 100);
+        if (processQueueTimeoutRef.current) {
+          clearTimeout(processQueueTimeoutRef.current);
+        }
+        processQueueTimeoutRef.current = setTimeout(processCommandQueue, 100);
       }
       return;
     }
@@ -274,7 +314,10 @@ const TargetDetail: React.FC = memo(() => {
       isProcessingCommand.current = false;
       // Process next command if queue not empty
       if (commandQueue.current.length > 0) {
-        setTimeout(processCommandQueue, 50);
+        if (processQueueTimeoutRef.current) {
+          clearTimeout(processQueueTimeoutRef.current);
+        }
+        processQueueTimeoutRef.current = setTimeout(processCommandQueue, 50);
       }
     }
   }, [writeData]);
@@ -321,23 +364,105 @@ const TargetDetail: React.FC = memo(() => {
     [connectedDevice, writeData, isTracking, processCommandQueue]
   );
 
-  // Handle SDR data with memoization
-  const handleDataReceived = useCallback((samples: number[]) => {
-    const newData = new Array(14).fill(0).map((_, i) => {
-      const index = Math.floor((i / 14) * (samples.length / 2)) * 2;
-      const iSample = samples[index] || 0;
-      const qSample = samples[index + 1] || 0;
-      return Math.sqrt(iSample * iSample + qSample * qSample) / 255;
-    });
-
+  // Enhanced SDR error handling function
+  const handleSDRError = useCallback((errorMessage: string) => {
+    console.error("SDR Error:", errorMessage);
     if (isMountedRef.current) {
-      setWaveformData(prevData => {
-        // Only update if data has actually changed
-        const hasChanged = newData.some((val, idx) => Math.abs(val - prevData[idx]) > 0.01);
-        return hasChanged ? newData : prevData;
-      });
+      setSdrError(errorMessage);
+      setIsSDRConnected(false);
+      setWaveformData([]);
     }
   }, []);
+
+  // Handle SDR data with enhanced connection detection
+  const handleDataReceived = useCallback((samples: readonly number[]) => {
+    try {
+      if (!samples || samples.length === 0) {
+        throw new Error("No SDR data received");
+      }
+
+      // Validate data integrity
+      const validSamples = samples.filter(sample => 
+        typeof sample === 'number' && !isNaN(sample) && isFinite(sample)
+      );
+      
+      if (validSamples.length < samples.length * 0.8) {
+        throw new Error("Invalid SDR data - too many corrupted samples");
+      }
+
+      const newData = new Array(14).fill(0).map((_, i) => {
+        const index = Math.floor((i / 14) * (validSamples.length / 2)) * 2;
+        const iSample = validSamples[index] || 0;
+        const qSample = validSamples[index + 1] || 0;
+        return Math.sqrt(iSample * iSample + qSample * qSample) / 255;
+      });
+
+      if (isMountedRef.current) {
+        setWaveformData(prevData => {
+          const hasChanged = newData.some((val, idx) => Math.abs(val - (prevData[idx] || 0)) > 0.01);
+          return hasChanged ? newData : prevData;
+        });
+        setSdrError(null);
+        setIsSDRConnected(true);
+        setSdrConnectionChecked(true);
+      }
+    } catch (error) {
+      console.error("SDR data processing error:", error);
+      handleSDRError(error instanceof Error ? error.message : "SDR data processing failed");
+    }
+  }, [handleSDRError]);
+
+  // Enhanced SDR connection monitoring
+  const monitorSDRConnection = useCallback(() => {
+    const SDR_TIMEOUT = 8000; // 8 seconds timeout
+    let lastDataTime = Date.now();
+    let connectionCheckTimeout: NodeJS.Timeout;
+    
+    const checkSDRStatus = () => {
+      const now = Date.now();
+      if (now - lastDataTime > SDR_TIMEOUT) {
+        if (isSDRConnected) {
+          handleSDRError("SDR connection timeout - no data received");
+        } else if (!sdrConnectionChecked) {
+          // Initial connection check failed
+          handleSDRError("SDR device not detected or not responding");
+          setSdrConnectionChecked(true);
+        }
+      }
+    };
+
+    // Monitor data reception
+    const originalHandleData = handleDataReceived;
+    const monitoredHandleData = (samples: readonly number[]) => {
+      lastDataTime = Date.now();
+      originalHandleData(samples);
+    };
+
+    // Check SDR status periodically
+    const statusInterval = setInterval(checkSDRStatus, 2000);
+    
+    // Initial connection check after a delay
+    connectionCheckTimeout = setTimeout(() => {
+      if (!isSDRConnected && !sdrConnectionChecked) {
+        handleSDRError("SDR device not responding - check connection");
+        setSdrConnectionChecked(true);
+      }
+    }, 5000);
+
+    return { 
+      monitoredHandleData, 
+      cleanup: () => {
+        clearInterval(statusInterval);
+        clearTimeout(connectionCheckTimeout);
+      }
+    };
+  }, [handleDataReceived, isSDRConnected, sdrConnectionChecked, handleSDRError]);
+
+  // Initialize SDR monitoring
+  useEffect(() => {
+    const { cleanup } = monitorSDRConnection();
+    return cleanup;
+  }, [monitorSDRConnection]);
 
   // Stop tracking with cleanup
   const stopTracking = useCallback(async () => {
@@ -406,7 +531,7 @@ const TargetDetail: React.FC = memo(() => {
     };
   }, [checkConnectionStatus]);
 
-  // Initialization with proper dependency management
+  // Initialization with proper dependency management - FIXED: No coordinate changes allowed
   useEffect(() => {
     if (!parsedTarget || hasSentAngles || !connectedDevice) {
       if (!connectedDevice && parsedTarget) {
@@ -421,29 +546,25 @@ const TargetDetail: React.FC = memo(() => {
       if (!isMountedRef.current || !isTracking) return;
 
       try {
-        // Parse frequency
-        const freqMatch = parsedTarget.frequency?.match(/(\d+\.?\d*)/);
-        const freq = freqMatch ? parseFloat(freqMatch[0]) : 20;
-        
-        setFrequency(prevFreq => prevFreq !== freq ? freq : prevFreq);
+        // Use SAVED frequency from target data - no modifications
+        setFrequency(prevFreq => prevFreq !== targetFrequency ? targetFrequency : prevFreq);
 
-        // Convert coordinates and send angles
+        // Convert SAVED coordinates and send angles - no modifications allowed
         const { azimuth: az, altitude: alt } = await convertToAltAz(parsedTarget);
         await sendAnglesDebounced(alt, az, 0); // High priority for initial positioning
         
         setHasSentAngles(true);
-        console.log(`Initialized: Frequency=${freq}MHz, Alt=${alt}°, Az=${az}°`);
+        console.log(`Tracking SAVED signal: ${parsedTarget.name}, Frequency=${targetFrequency}MHz, Alt=${alt}°, Az=${az}°`);
       } catch (error) {
         console.error("Initialization error:", error);
       }
     };
 
     initialize();
-  }, [parsedTarget, connectedDevice, isTracking, hasSentAngles, convertToAltAz, sendAnglesDebounced]);
+  }, [parsedTarget, connectedDevice, isTracking, hasSentAngles, convertToAltAz, sendAnglesDebounced, targetFrequency]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount - Enhanced cleanup
   useEffect(() => {
-    // Capture the current rateLimiter instance for cleanup
     const rateLimiterInstance = rateLimiter.current;
     return () => {
       isMountedRef.current = false;
@@ -454,6 +575,9 @@ const TargetDetail: React.FC = memo(() => {
       }
       if (connectionCheckTimeoutRef.current) {
         clearTimeout(connectionCheckTimeoutRef.current);
+      }
+      if (processQueueTimeoutRef.current) {
+        clearTimeout(processQueueTimeoutRef.current);
       }
       
       // Clear command queue
@@ -486,9 +610,33 @@ const TargetDetail: React.FC = memo(() => {
     return "Poor";
   }, [isConnected, rssi]);
 
-  const daisyChainStatusText = useMemo(() => {
-    return isConnected ? "Active" : "Inactive";
-  }, [isConnected]);
+  // Memoized status display with enhanced SDR status
+  const sdrStatusText = useMemo(() => {
+    if (!sdrConnectionChecked && !isSDRConnected) return "Checking...";
+    if (sdrError) return "Error";
+    return isSDRConnected ? "Active" : "Disconnected";
+  }, [isSDRConnected, sdrError, sdrConnectionChecked]);
+
+  // Check if controls should be enabled
+  const controlsEnabled = useMemo(() => {
+    return isSDRConnected && !sdrError;
+  }, [isSDRConnected, sdrError]);
+
+  // Show SDR connection error alert
+  const showSDRConnectionAlert = useCallback(() => {
+    Alert.alert(
+      "SDR Not Connected",
+      "Please check your RTL-SDR connection and try again.",
+      [
+        { text: "Retry", onPress: () => {
+          setSdrError(null);
+          setSdrConnectionChecked(false);
+          setIsSDRConnected(false);
+        }},
+        { text: "OK" }
+      ]
+    );
+  }, []);
 
   if (!parsedTarget) return null;
 
@@ -517,54 +665,108 @@ const TargetDetail: React.FC = memo(() => {
               <View style={styles.statusIconCircle}>
                 <View style={styles.statusIconInnerCircle} />
               </View>
-              <Text style={styles.statusLabel}>STATUS</Text>
-              <Text style={styles.statusValueGreen}>
+              <Text style={styles.statusLabel}>BLE</Text>
+              <Text style={[styles.statusValue, { color: isConnected ? 'green' : 'red' }]}>
                 {connectionStatusText}
               </Text>
             </View>
             <View style={styles.statusItem}>
               <MaterialCommunityIcons name="wifi" size={24} color="white" />
               <Text style={styles.statusLabel}>SIGNAL</Text>
-              <Text style={styles.statusValueGreen}>
+              <Text style={[styles.statusValue, { color: isConnected && rssi !== null ? 'green' : 'orange' }]}>
                 {signalStatusText}
+              </Text>
+            </View>
+            <View style={styles.statusItem}>
+              <MaterialCommunityIcons name="radio" size={24} color="white" />
+              <Text style={styles.statusLabel}>SDR</Text>
+              <Text style={[styles.statusValue, { color: isSDRConnected ? 'green' : 'red' }]}>
+                {sdrStatusText}
               </Text>
             </View>
           </View>
 
-          {/* Visualizer */}
-          <View style={styles.planetContainer}>
-            <RTLSDRComponent
-              frequency={frequency}
-              onDataReceived={handleDataReceived}
-            />
-            <AudioVisualizer data={waveformData} />
+          {/* SDR Error Display - Enhanced */}
+          {(sdrError || (!isSDRConnected && sdrConnectionChecked)) && (
+            <View style={styles.errorContainer}>
+              <MaterialCommunityIcons name="alert-circle" size={20} color="#FF6464" />
+              <Text style={styles.errorText}>
+                {sdrError || "SDR device not connected"}
+              </Text>
+              <TouchableOpacity 
+                style={styles.retryButton}
+                onPress={showSDRConnectionAlert}
+              >
+                <Text style={styles.retryButtonText}>Retry</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* STR Component and Visualizer - With conditional styling */}
+          <View style={styles.signalSection}>
+            <View style={[
+              styles.strContainer, 
+              !controlsEnabled && styles.disabledContainer
+            ]}>
+              <STRComponent
+                initialFrequency={targetFrequency}
+                onDataReceived={handleDataReceived}
+                contextualStyling={true}
+                showControls={controlsEnabled}
+                targetPlanet={targetPlanet}
+              />
+              {!controlsEnabled && (
+                <View style={styles.disabledOverlay}>
+                  <MaterialCommunityIcons 
+                    name="radio-off" 
+                    size={48} 
+                    color="rgba(255, 255, 255, 0.3)" 
+                  />
+                  <Text style={styles.disabledText}>SDR Required</Text>
+                  <TouchableOpacity 
+                    style={styles.connectButton}
+                    onPress={showSDRConnectionAlert}
+                  >
+                    <Text style={styles.connectButtonText}>Connect SDR</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+            {waveformData.length > 0 && (
+              <View style={styles.visualizerWrapper}>
+                <AudioVisualizer data={waveformData} />
+              </View>
+            )}
+            {waveformData.length === 0 && !sdrError && (
+              <View style={styles.noDataContainer}>
+                <Text style={styles.noDataText}>Waiting for SDR data...</Text>
+              </View>
+            )}
           </View>
 
-          {/* Details Section */}
+          {/* Details Section - Compact layout */}
           <View style={styles.detailsContainer}>
             <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>RIGHT ASCENSION (RA):</Text>
+              <Text style={styles.detailLabel}>RA:</Text>
               <Text style={styles.detailValue}>{parsedTarget.ra}</Text>
             </View>
             <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>DECLINATION (DEC):</Text>
+              <Text style={styles.detailLabel}>DEC:</Text>
               <Text style={styles.detailValue}>{parsedTarget.dec}</Text>
             </View>
             <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>ALTITUDE (Alt):</Text>
+              <Text style={styles.detailLabel}>ALT:</Text>
               <Text style={styles.detailValue}>{currentAngles.altitude.toFixed(1)}°</Text>
             </View>
             <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>AZIMUTH (Az):</Text>
+              <Text style={styles.detailLabel}>AZ:</Text>
               <Text style={styles.detailValue}>{currentAngles.azimuth.toFixed(1)}°</Text>
             </View>
             <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>FREQUENCY:</Text>
-              <Text style={styles.detailValue}>{frequency} MHz</Text>
+              <Text style={styles.detailLabel}>FREQ:</Text>
+              <Text style={styles.detailValue}>{targetFrequency.toFixed(1)} MHz</Text>
             </View>
           </View>
-
-          <View style={{ flex: 1 }} />
 
           {/* Footer */}
           <View style={styles.footerButtons}>
@@ -610,12 +812,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "transparent",
     paddingTop: 40,
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
+    paddingBottom: 50,
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 10,
+    marginBottom: 10,
   },
   backButton: {
     backgroundColor: "#121212",
@@ -626,119 +829,141 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     color: "white",
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "bold",
     fontFamily: FONT_FAMILY_UI,
     marginLeft: 15,
-    lineHeight: 26,
+    lineHeight: 24,
   },
   statusContainer: {
-    marginTop: 20,
-    marginBottom: 10,
+    marginBottom: 2,
     flexDirection: "row",
     justifyContent: "space-between",
-    borderRadius: 20,
-    paddingVertical: 30,
-    paddingHorizontal: 20,
+    borderRadius: 15,
+    paddingVertical: 20,
+    paddingHorizontal: 15,
     backgroundColor: "rgba(0, 0, 0, 0.4)",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.2)",
-    shadowColor: "rgba(0, 0, 0, 0.4)",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 10,
     alignItems: "center",
   },
   statusItem: {
     alignItems: "center",
+    flex: 1,
   },
   statusIconCircle: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     borderWidth: 2,
     borderColor: "#FF8C2B",
     justifyContent: "center",
     alignItems: "center",
   },
   statusIconInnerCircle: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: "#FF8C2B",
   },
   statusLabel: {
     color: "white",
     fontFamily: FONT_FAMILY_UI,
-    fontSize: 12,
-    fontWeight: "600",
-    marginTop: 5,
+    fontSize: 6,
+    fontWeight: "400",
+    marginTop: 4,
   },
-  statusValueGreen: {
-    color: 'green',
-    fontSize: 12,
+  statusValue: {
+    fontSize: 10,
     fontWeight: "bold",
     fontFamily: FONT_FAMILY_UI,
     marginTop: 2,
   },
-  planetContainer: {
+  errorContainer: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    backgroundColor: "rgba(255, 100, 100, 0.2)",
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "#FF6464",
+  },
+  errorText: {
+    color: "#FF6464",
+    fontSize: 12,
+    fontFamily: FONT_FAMILY_UI,
+    marginLeft: 8,
+    flex: 1,
+  },
+  retryButton: {
+    backgroundColor: "#FF6464",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 15,
+    marginLeft: 8,
+  },
+  retryButtonText: {
+    color: "white",
+    fontSize: 10,
+    fontWeight: "bold",
+    fontFamily: FONT_FAMILY_UI,
+  },
+  signalSection: {
+    alignItems: "center",
     marginVertical: 15,
+    flex: 1,
+    justifyContent: "center",
+  },
+  strContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  visualizerWrapper: {
+    alignItems: "center",
+    justifyContent: "center",
   },
   visualizerContainer: {
     flexDirection: "row",
     alignItems: "flex-end",
-    height: 150,
+    height: 80,
+    justifyContent: "center",
   },
   visualizerBar: {
-    width: 10,
-    backgroundColor: "rgba(255, 255, 255, 0.5)",
-    borderRadius: 10,
-    marginHorizontal: 3,
+    width: 8,
+    backgroundColor: "rgba(255, 255, 255, 0.6)",
+    borderRadius: 5,
+    marginHorizontal: 2,
   },
   detailsContainer: {
-    marginTop: 40,
-    borderRadius: 20,
+    borderRadius: 15,
     padding: 15,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 30,
-    paddingHorizontal: 20,
     backgroundColor: "rgba(0, 0, 0, 0.4)",
     borderWidth: 1,
     borderColor: "rgba(255, 255, 255, 0.2)",
-    shadowColor: "rgba(0, 0, 0, 0.4)",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
-    elevation: 10,
+    marginBottom: 15,
   },
   detailRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginBottom: 8,
-    width: "100%",
+    marginBottom: 6,
   },
   detailLabel: {
     color: "#FF8C2B",
     fontWeight: "bold",
     fontFamily: FONT_FAMILY_UI,
-    fontSize: 15,
+    fontSize: 13,
   },
   detailValue: {
     color: "white",
     fontFamily: FONT_FAMILY_UI,
-    fontSize: 15,
+    fontSize: 13,
   },
   footerButtons: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-end",
-    position: "relative",
-    paddingBottom: 55,
+    alignItems: "center",
+    paddingTop: 5,
   },
   iconButton: {
     alignItems: "center",
@@ -751,24 +976,24 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
   stopIconOuter: {
-    width: 40,
-    height: 40,
-    borderRadius: 25,
+    width: 35,
+    height: 35,
+    borderRadius: 20,
     borderWidth: 2,
     borderColor: "#FF6464",
     justifyContent: "center",
     alignItems: "center",
   },
   stopIconInner: {
-    width: 10,
-    height: 10,
+    width: 8,
+    height: 8,
     backgroundColor: "#FF6464",
   },
   recButton: {
     backgroundColor: "#FF833A",
-    borderRadius: 30,
-    paddingVertical: 15,
-    paddingHorizontal: 25,
+    borderRadius: 25,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
@@ -780,11 +1005,63 @@ const styles = StyleSheet.create({
   },
   recButtonText: {
     color: "white",
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: "bold",
     fontFamily: FONT_FAMILY_UI,
-    marginLeft: 8,
+    marginLeft: 6,
+  },
+  noDataContainer: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  noDataText: {
+    color: "rgba(255, 255, 255, 0.7)",
+    fontSize: 14,
+    fontFamily: FONT_FAMILY_UI,
+    marginTop: 10,
+  },
+  disabledContainer: {
+    opacity: 0.3,
+    position: 'relative',
+  },
+  disabledOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 25,
+    zIndex: 10,
+  },
+  disabledText: {
+    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 16,
+    fontWeight: 'bold',
+    fontFamily: FONT_FAMILY_UI,
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  connectButton: {
+    backgroundColor: '#FF833A',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  connectButtonText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: 'bold',
+    fontFamily: FONT_FAMILY_UI,
   },
 });
 
 export default TargetDetail;
+
+function handleSDRError(arg0: string) {
+  throw new Error("Function not implemented.");
+}
